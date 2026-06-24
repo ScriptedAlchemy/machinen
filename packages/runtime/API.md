@@ -4822,7 +4822,7 @@ Size in bytes the file was allocated at.
 
 ###### sourceArch?
 
-> `optional` **sourceArch?**: `"amd64"` \| `"arm64"`
+> `optional` **sourceArch?**: `"arm64"` \| `"amd64"`
 
 ###### resources
 
@@ -6154,7 +6154,7 @@ by default when `output` is a TTY.
 
 ##### targetArch
 
-> **targetArch**: `"amd64"` \| `"arm64"`
+> **targetArch**: `"arm64"` \| `"amd64"`
 
 ##### targetRoot?
 
@@ -6203,7 +6203,7 @@ by default when `output` is a TTY.
 
 ##### arch?
 
-> `optional` **arch?**: `"amd64"` \| `"arm64"`
+> `optional` **arch?**: `"arm64"` \| `"amd64"`
 
 ##### kind
 
@@ -6839,7 +6839,7 @@ by default when `output` is a TTY.
 
 ###### sourceArch
 
-> **sourceArch**: `"amd64"` \| `"arm64"`
+> **sourceArch**: `"arm64"` \| `"amd64"`
 
 ###### pid?
 
@@ -6859,7 +6859,7 @@ by default when `output` is a TTY.
 
 ###### arch
 
-> **arch**: `"amd64"` \| `"arm64"`
+> **arch**: `"arm64"` \| `"amd64"`
 
 ###### abi
 
@@ -7439,11 +7439,11 @@ by default when `output` is a TTY.
 
 ##### sourceArch
 
-> **sourceArch**: `"amd64"` \| `"arm64"`
+> **sourceArch**: `"arm64"` \| `"amd64"`
 
 ##### targetArch
 
-> **targetArch**: `"amd64"` \| `"arm64"`
+> **targetArch**: `"arm64"` \| `"amd64"`
 
 ##### codeLocations
 
@@ -7571,7 +7571,7 @@ by default when `output` is a TTY.
 
 ##### arch?
 
-> `optional` **arch?**: `"amd64"` \| `"arm64"`
+> `optional` **arch?**: `"arm64"` \| `"amd64"`
 
 ###### Inherited from
 
@@ -7679,7 +7679,7 @@ by default when `output` is a TTY.
 
 ##### arch?
 
-> `optional` **arch?**: `"amd64"` \| `"arm64"`
+> `optional` **arch?**: `"arm64"` \| `"amd64"`
 
 ###### Inherited from
 
@@ -7925,7 +7925,7 @@ by default when `output` is a TTY.
 
 ##### targetArch
 
-> **targetArch**: `"amd64"` \| `"arm64"`
+> **targetArch**: `"arm64"` \| `"amd64"`
 
 ##### targetModules
 
@@ -8089,11 +8089,11 @@ by default when `output` is a TTY.
 
 ##### sourceArch
 
-> **sourceArch**: `"amd64"` \| `"arm64"`
+> **sourceArch**: `"arm64"` \| `"amd64"`
 
 ##### targetArch
 
-> **targetArch**: `"amd64"` \| `"arm64"`
+> **targetArch**: `"arm64"` \| `"amd64"`
 
 ##### threads
 
@@ -8141,11 +8141,11 @@ by default when `output` is a TTY.
 
 ##### sourceArch
 
-> **sourceArch**: `"amd64"` \| `"arm64"`
+> **sourceArch**: `"arm64"` \| `"amd64"`
 
 ##### targetArch
 
-> **targetArch**: `"amd64"` \| `"arm64"`
+> **targetArch**: `"arm64"` \| `"amd64"`
 
 ##### threads
 
@@ -11560,11 +11560,11 @@ Legacy single-bucket failure status. Prefer failureExitBuckets for new continuat
 
 ##### sourceArch
 
-> **sourceArch**: `"amd64"` \| `"arm64"`
+> **sourceArch**: `"arm64"` \| `"amd64"`
 
 ##### targetArch
 
-> **targetArch**: `"amd64"` \| `"arm64"`
+> **targetArch**: `"arm64"` \| `"amd64"`
 
 ##### sourceThreadPointer?
 
@@ -11602,7 +11602,7 @@ Legacy single-bucket failure status. Prefer failureExitBuckets for new continuat
 
 ##### targetArch?
 
-> `optional` **targetArch?**: `"amd64"` \| `"arm64"`
+> `optional` **targetArch?**: `"arm64"` \| `"amd64"`
 
 ##### targetFsBase?
 
@@ -14397,7 +14397,7 @@ Legacy single-bucket failure status. Prefer failureExitBuckets for new continuat
 
 ###### guestArch
 
-> **guestArch**: `"amd64"` \| `"arm64"`
+> **guestArch**: `"arm64"` \| `"amd64"`
 
 ###### vmstate
 
@@ -14429,7 +14429,7 @@ Legacy single-bucket failure status. Prefer failureExitBuckets for new continuat
 
 ###### guestArch
 
-> **guestArch**: `"amd64"` \| `"arm64"`
+> **guestArch**: `"arm64"` \| `"amd64"`
 
 ###### mode
 
@@ -17241,7 +17241,7 @@ VMM backend that wrote `state.vmstate`.
 
 ##### guestArch?
 
-> `optional` **guestArch?**: `"amd64"` \| `"unknown"` \| `"arm64"`
+> `optional` **guestArch?**: `"arm64"` \| `"amd64"` \| `"unknown"`
 
 Guest CPU architecture captured in `state.vmstate`; restore must match.
 
@@ -17276,6 +17276,38 @@ Pointer-auth state inferred from SCTLR_EL1 at snapshot time.
 > `optional` **rootDisk?**: `object` & [`SnapshotFileIdentity`](#snapshotfileidentity) \| \{ `mode`: `"delta"`; \} \| \{ `mode`: `"none"`; \}
 
 Exact root block image needed by the resumed guest, a parent-relative delta, or explicit absence.
+
+##### shell?
+
+> `optional` **shell?**: `object`
+
+Exact boot shell required to restore this frozen VM state. The id is
+digest-based, so regions can advertise compatibility without sharing
+deployment-local paths.
+
+###### id
+
+> **id**: `string`
+
+Path-independent digest over rootfs/kernel/DTB identities.
+
+###### rootfs
+
+> **rootfs**: [`SnapshotFileIdentity`](#snapshotfileidentity)
+
+Rootfs tarball identity used to build the restore initramfs shell.
+
+###### kernel
+
+> **kernel**: [`SnapshotFileIdentity`](#snapshotfileidentity)
+
+Guest kernel image identity.
+
+###### dtb?
+
+> `optional` **dtb?**: [`SnapshotFileIdentity`](#snapshotfileidentity)
+
+Guest DTB identity; absent for guests that boot without a DTB.
 
 ##### kernel?
 
@@ -26352,6 +26384,94 @@ Read the balloon-stats file at `path`. Returns `null` when:
 
 ***
 
+### resolveBaseRootfs()
+
+> **resolveBaseRootfs**(`explicit?`, `cwd?`): `string`
+
+Resolve the path to the base rootfs tarball. Fallback chain:
+explicit → `MACHINEN_ASSETS_DIR/<arch rootfs>` → `@machinen/cli`
+cache at `<base>/rootfs.tar.gz`.
+
+#### Parameters
+
+##### explicit?
+
+`string`
+
+##### cwd?
+
+`string` = `...`
+
+#### Returns
+
+`string`
+
+#### Throws
+
+PROVISION_BASE_NOT_FOUND |
+  PROVISION_ASSETS_DIR_INVALID
+
+***
+
+### resolveBaseKernel()
+
+> **resolveBaseKernel**(`explicit?`, `cwd?`): `string`
+
+Resolve the path to the guest kernel image. Same fallback chain as
+`resolveBaseRootfs`: explicit → `MACHINEN_ASSETS_DIR/<arch kernel>` →
+`@machinen/cli` cache at `<base>/Image`.
+
+#### Parameters
+
+##### explicit?
+
+`string`
+
+##### cwd?
+
+`string` = `...`
+
+#### Returns
+
+`string`
+
+#### Throws
+
+PROVISION_KERNEL_NOT_FOUND |
+  PROVISION_ASSETS_DIR_INVALID
+
+***
+
+### resolveBaseDtb()
+
+> **resolveBaseDtb**(`explicit?`, `cwd?`): `string`
+
+Resolve the path to the guest DTB. amd64 guests do not use a DTB unless
+the caller passes one explicitly. arm64 follows the same fallback chain as
+`resolveBaseRootfs`: explicit → `MACHINEN_ASSETS_DIR/virt-arm64.dtb` →
+`@machinen/cli` cache at `<base>/virt.dtb`.
+
+#### Parameters
+
+##### explicit?
+
+`string`
+
+##### cwd?
+
+`string` = `...`
+
+#### Returns
+
+`string`
+
+#### Throws
+
+PROVISION_DTB_NOT_FOUND |
+  PROVISION_ASSETS_DIR_INVALID
+
+***
+
 ### detachedLogRoot()
 
 > **detachedLogRoot**(): `string`
@@ -29842,105 +29962,6 @@ readonly (`number` \| [`RssTarget`](#rsstarget))[]
 ##### graduationRequirements
 
 > **graduationRequirements**: `string`[]
-
-***
-
-### resolveBaseRootfs()
-
-> **resolveBaseRootfs**(`explicit?`, `cwd?`): `string`
-
-Resolve the path to the base rootfs tarball, in the same order
-`provision()` itself does:
-
-  1. `explicit` — the caller-supplied path (resolved against `cwd`).
-  2. `MACHINEN_ASSETS_DIR` env var — points at a directory laid out like
-     `scripts/build-base-assets.sh`'s output (contains the selected
-     arch's rootfs tarball). Same convention `@machinen/cli` honors for
-     local/dev builds.
-  3. `@machinen/cli`'s on-disk cache at
-     `~/.machinen/@machinen/runtime@<version>/bases/debian-<arch>/rootfs.tar.gz`.
-     Populated by running `machinen` once against the installed runtime.
-
-Throws `ProvisionError` with guidance if none of those turn up a file.
-Exported so callers can pre-check or build their own tooling on it.
-
-#### Parameters
-
-##### explicit?
-
-`string`
-
-##### cwd?
-
-`string` = `...`
-
-#### Returns
-
-`string`
-
-#### Throws
-
-PROVISION_BASE_NOT_FOUND | PROVISION_ASSETS_DIR_INVALID
-
-***
-
-### resolveBaseKernel()
-
-> **resolveBaseKernel**(`explicit?`, `cwd?`): `string`
-
-Resolve the path to the guest kernel image. Same fallback chain as
-`resolveBaseRootfs`: explicit → `MACHINEN_ASSETS_DIR/<arch kernel>` →
-`@machinen/cli` cache at `<base>/Image`. Exported for callers that
-want to pre-check or wire the path into `boot()`.
-
-#### Parameters
-
-##### explicit?
-
-`string`
-
-##### cwd?
-
-`string` = `...`
-
-#### Returns
-
-`string`
-
-#### Throws
-
-PROVISION_KERNEL_NOT_FOUND |
-  PROVISION_ASSETS_DIR_INVALID
-
-***
-
-### resolveBaseDtb()
-
-> **resolveBaseDtb**(`explicit?`, `cwd?`): `string`
-
-Resolve the path to the guest DTB. amd64 guests do not use a DTB unless
-the caller passes one explicitly. arm64 follows the same fallback chain as
-`resolveBaseRootfs`: explicit → `MACHINEN_ASSETS_DIR/virt-arm64.dtb` →
-`@machinen/cli` cache at `<base>/virt.dtb`.
-
-#### Parameters
-
-##### explicit?
-
-`string`
-
-##### cwd?
-
-`string` = `...`
-
-#### Returns
-
-`string`
-
-#### Throws
-
-PROVISION_DTB_NOT_FOUND |
-  PROVISION_ASSETS_DIR_INVALID
 
 ***
 

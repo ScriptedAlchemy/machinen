@@ -22,21 +22,11 @@
 //   });
 
 import { execFileSync } from "node:child_process";
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-  writeSync,
-} from "node:fs";
-import { arch as osArch, homedir, tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import debugLib from "debug";
+import { resolveBaseDtb, resolveBaseKernel, resolveBaseRootfs } from "./base-assets.ts";
 import { ProvisionError } from "./errors.ts";
 import { VsockExec } from "./exec.ts";
 import type { OnLog } from "./log.ts";
@@ -49,9 +39,12 @@ import {
   markRootfsImageClean,
   prebakeRootfsImageFromTree,
 } from "./rootfs-img.ts";
+import { allocateSparseFile } from "./vm/helpers.ts";
 
 const debug = debugLib("machinen:provision");
 const vmmDebug = debugLib("machinen:vmm");
+
+export { resolveBaseDtb, resolveBaseKernel, resolveBaseRootfs } from "./base-assets.ts";
 
 export interface ProvisionOptions {
   /**
@@ -183,177 +176,6 @@ const TAR_TO_DISK_CMD = [
   "-cf /dev/vdb",
   ".",
 ].join(" ");
-
-/**
- * Resolve the path to the base rootfs tarball, in the same order
- * `provision()` itself does:
- *
- *   1. `explicit` — the caller-supplied path (resolved against `cwd`).
- *   2. `MACHINEN_ASSETS_DIR` env var — points at a directory laid out like
- *      `scripts/build-base-assets.sh`'s output (contains the selected
- *      arch's rootfs tarball). Same convention `@machinen/cli` honors for
- *      local/dev builds.
- *   3. `@machinen/cli`'s on-disk cache at
- *      `~/.machinen/@machinen/runtime@<version>/bases/debian-<arch>/rootfs.tar.gz`.
- *      Populated by running `machinen` once against the installed runtime.
- *
- * Throws `ProvisionError` with guidance if none of those turn up a file.
- * Exported so callers can pre-check or build their own tooling on it.
- *
- * @throws {ProvisionError} PROVISION_BASE_NOT_FOUND | PROVISION_ASSETS_DIR_INVALID
- */
-export function resolveBaseRootfs(explicit?: string, cwd: string = process.cwd()): string {
-  const spec = baseAssetSpec();
-  return resolveBaseAsset(
-    {
-      kind: "base rootfs tarball",
-      param: "base",
-      assetsDirName: spec.rootfsAsset,
-      cliCacheName: "rootfs.tar.gz",
-      missingCode: "PROVISION_BASE_NOT_FOUND",
-    },
-    explicit,
-    cwd,
-  );
-}
-
-/**
- * Resolve the path to the guest kernel image. Same fallback chain as
- * `resolveBaseRootfs`: explicit → `MACHINEN_ASSETS_DIR/<arch kernel>` →
- * `@machinen/cli` cache at `<base>/Image`. Exported for callers that
- * want to pre-check or wire the path into `boot()`.
- *
- * @throws {ProvisionError} PROVISION_KERNEL_NOT_FOUND |
- *   PROVISION_ASSETS_DIR_INVALID
- */
-export function resolveBaseKernel(explicit?: string, cwd: string = process.cwd()): string {
-  const spec = baseAssetSpec();
-  return resolveBaseAsset(
-    {
-      kind: "kernel image",
-      param: "kernel",
-      assetsDirName: spec.kernelAsset,
-      cliCacheName: "Image",
-      missingCode: "PROVISION_KERNEL_NOT_FOUND",
-    },
-    explicit,
-    cwd,
-  );
-}
-
-/**
- * Resolve the path to the guest DTB. amd64 guests do not use a DTB unless
- * the caller passes one explicitly. arm64 follows the same fallback chain as
- * `resolveBaseRootfs`: explicit → `MACHINEN_ASSETS_DIR/virt-arm64.dtb` →
- * `@machinen/cli` cache at `<base>/virt.dtb`.
- *
- * @throws {ProvisionError} PROVISION_DTB_NOT_FOUND |
- *   PROVISION_ASSETS_DIR_INVALID
- */
-export function resolveBaseDtb(explicit?: string, cwd: string = process.cwd()): string | undefined {
-  if (!explicit && guestCpu() === "amd64") {
-    return undefined;
-  }
-  const spec = baseAssetSpec();
-  return resolveBaseAsset(
-    {
-      kind: "device tree blob",
-      param: "dtb",
-      assetsDirName: spec.dtbAsset ?? "virt-arm64.dtb",
-      cliCacheName: "virt.dtb",
-      missingCode: "PROVISION_DTB_NOT_FOUND",
-    },
-    explicit,
-    cwd,
-  );
-}
-
-type GuestCpu = "arm64" | "amd64";
-
-function guestCpu(): GuestCpu {
-  const override = process.env.MACHINEN_GUEST_ARCH;
-  if (override === "arm64" || override === "amd64") {
-    return override;
-  }
-  return osArch() === "x64" ? "amd64" : "arm64";
-}
-
-function baseAssetSpec(): {
-  cpu: GuestCpu;
-  kernelAsset: string;
-  dtbAsset?: string;
-  rootfsAsset: string;
-} {
-  return guestCpu() === "amd64"
-    ? {
-        cpu: "amd64",
-        kernelAsset: "bzImage-x86_64",
-        rootfsAsset: "rootfs-debian-amd64.tar.gz",
-      }
-    : {
-        cpu: "arm64",
-        kernelAsset: "Image-arm64",
-        dtbAsset: "virt-arm64.dtb",
-        rootfsAsset: "rootfs-debian-arm64.tar.gz",
-      };
-}
-
-interface BaseAssetSpec {
-  kind: string;
-  param: string;
-  assetsDirName: string;
-  cliCacheName: string;
-  missingCode:
-    | "PROVISION_BASE_NOT_FOUND"
-    | "PROVISION_KERNEL_NOT_FOUND"
-    | "PROVISION_DTB_NOT_FOUND";
-}
-
-function resolveBaseAsset(spec: BaseAssetSpec, explicit: string | undefined, cwd: string): string {
-  if (explicit) {
-    const abs = resolve(cwd, explicit);
-    if (!existsSync(abs)) {
-      throw new ProvisionError(spec.missingCode, `${spec.kind} not found: ${abs}`);
-    }
-    return abs;
-  }
-
-  const assetsDir = process.env.MACHINEN_ASSETS_DIR;
-  if (assetsDir) {
-    const p = resolve(assetsDir, spec.assetsDirName);
-    if (!existsSync(p)) {
-      throw new ProvisionError(
-        "PROVISION_ASSETS_DIR_INVALID",
-        `MACHINEN_ASSETS_DIR=${assetsDir} does not contain ${spec.assetsDirName}`,
-      );
-    }
-    return p;
-  }
-
-  const cached = join(cliCachedBaseDir(), spec.cliCacheName);
-  if (existsSync(cached)) {
-    return cached;
-  }
-
-  throw new ProvisionError(
-    spec.missingCode,
-    `${spec.kind} not found. Either:\n` +
-      `  - pass \`${spec.param}\` explicitly, or\n` +
-      `  - set MACHINEN_ASSETS_DIR to a directory containing ${spec.assetsDirName}, or\n` +
-      `  - install @machinen/cli and run it once to populate ${cached}`,
-  );
-}
-
-function cliCachedBaseDir(): string {
-  // Mirrors `@machinen/cli`'s `baseDirFor(RELEASE_TAG)` where
-  // RELEASE_TAG = `runtime-v${VERSION}` (slash-free so the GitHub
-  // release URL pattern works — see the comment on RELEASE_TAG in
-  // packages/cli/src/cli.ts).
-  const pkgPath = resolve(import.meta.dirname, "..", "package.json");
-  const version = (JSON.parse(readFileSync(pkgPath, "utf8")) as { version: string }).version;
-  const spec = baseAssetSpec();
-  return join(homedir(), ".machinen", `runtime-v${version}`, "bases", `debian-${spec.cpu}`);
-}
 
 interface ProvisionContext {
   cwd: string;
@@ -641,16 +463,6 @@ function tapExecForLog(
     onStdout: (chunk) => onLog({ source: "exec-stdout", cmd, chunk }),
     onStderr: (chunk) => onLog({ source: "exec-stderr", cmd, chunk }),
   };
-}
-
-function allocateSparseFile(path: string, sizeBytes: number): void {
-  const fd = openSync(path, "w");
-  try {
-    const buf = Buffer.alloc(1);
-    writeSync(fd, buf, 0, 1, sizeBytes - 1);
-  } finally {
-    closeSync(fd);
-  }
 }
 
 /**
