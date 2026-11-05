@@ -41,10 +41,12 @@ interface ParsedRunArgs {
   provider?: string;
   /** Prepared macOS bundle directory (`--image` when guestOS is macos). */
   macosBundle?: string;
-  /** SSH identity file for a macOS guest (`--ssh-key`). Never persisted. */
+  /** SSH identity file for a macOS guest (`--ssh-key`). Recorded by path only. */
   sshIdentityFile?: string;
   /** SSH user for a macOS guest (`--ssh-user`). */
   sshUser?: string;
+  /** Guest address for a macOS guest (`--ssh-host`). Discovered when absent. */
+  sshHost?: string;
   /** VM name registered for `attach` (`--name <name>`, default `default`). */
   name?: string;
   /**
@@ -92,6 +94,7 @@ type RunFlag =
   | "macosBundle"
   | "sshKey"
   | "sshUser"
+  | "sshHost"
   | "guestCwd"
   | "name"
   | "detach"
@@ -121,6 +124,7 @@ interface RunParseState {
   macosBundle?: string;
   sshIdentityFile?: string;
   sshUser?: string;
+  sshHost?: string;
   name?: string;
   guestCwd?: string;
   detached: boolean;
@@ -147,6 +151,7 @@ const RUN_VALUE_FLAGS = new Map<string, RunFlag>([
   ["--macos-bundle", "macosBundle"],
   ["--ssh-key", "sshKey"],
   ["--ssh-user", "sshUser"],
+  ["--ssh-host", "sshHost"],
 ]);
 
 const RUN_BARE_FLAGS = new Map<string, RunFlag>([
@@ -169,6 +174,7 @@ const RUN_FLAG_HANDLERS: Record<RunFlag, RunFlagHandler> = {
   macosBundle: handleRunMacosBundle,
   sshKey: handleRunSshKey,
   sshUser: handleRunSshUser,
+  sshHost: handleRunSshHost,
   guestCwd: handleRunGuestCwd,
   name: handleRunName,
   detach: handleRunDetach,
@@ -248,6 +254,7 @@ function finishRunArgs(state: RunParseState, double_dash_args: string[]): Parsed
     macosBundle: state.macosBundle,
     sshIdentityFile: state.sshIdentityFile,
     sshUser: state.sshUser,
+    sshHost: state.sshHost,
     name: state.name ?? DEFAULT_VM_NAME,
     guestCwd: state.guestCwd,
     detached: state.detached || undefined,
@@ -377,6 +384,18 @@ function handleRunSshUser(
   assertRunFlagUnused(state.sshUser !== undefined, "--ssh-user");
   const { spec, next } = takeValue(flag, args, index, "a user name");
   state.sshUser = spec;
+  return next;
+}
+
+function handleRunSshHost(
+  state: RunParseState,
+  flag: string,
+  args: string[],
+  index: number,
+): number {
+  assertRunFlagUnused(state.sshHost !== undefined, "--ssh-host");
+  const { spec, next } = takeValue(flag, args, index, "a guest address");
+  state.sshHost = spec;
   return next;
 }
 

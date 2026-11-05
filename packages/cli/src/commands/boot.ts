@@ -48,6 +48,12 @@ const MACOS_BOOT_REQUIREMENTS: ReadonlyArray<{
   message: string;
 }> = [
   {
+    missing: (p) => !p.detached,
+    message:
+      "boot --guest-os macos needs --detach. A macOS guest has no console to attach to, " +
+      "and its runner outlives this command. Drive it with `machinen exec`.",
+  },
+  {
     missing: (p) => (p.macosBundle ?? p.positional[0]) === undefined,
     message:
       "boot --guest-os macos needs a prepared bundle. " +
@@ -66,7 +72,7 @@ async function bootMacosCommand(parsed: ParsedBootArgs): Promise<number> {
   requireMacosOptions(parsed);
   const quiet = createBootQuietState(parsed, parsed.macosBundle);
   try {
-    return await runMacosBoot(parsed, quiet);
+    return await runMacosBoot(parsed);
   } catch (err) {
     handleBootFailure(err, quiet);
   }
@@ -79,33 +85,34 @@ function requireMacosOptions(parsed: ParsedBootArgs): void {
   }
 }
 
-async function runMacosBoot(parsed: ParsedBootArgs, quiet: QuietRunState): Promise<number> {
-  const vm = await boot(macosBootOptions(parsed, quiet));
-  if (parsed.detached) {
-    reportDetachedBoot(vm, parsed);
+async function runMacosBoot(parsed: ParsedBootArgs): Promise<number> {
+  const vm = await boot(macosBootOptions(parsed));
+  if (parsed.json) {
+    emitDetachedBootJson(vm, parsed);
     return 0;
   }
+  const target = parsed.name ?? vm.pid;
   process.stderr.write(
-    `machinen: macOS guest ${parsed.name ?? vm.pid} is running over SSH. ` +
-      "Interactive sessions are not implemented; use `machinen exec`.\n",
+    `machinen: macOS guest ${target} is running.\n` +
+      `Run a command: machinen exec ${target} -- <cmd>\n` +
+      `Stop: machinen stop ${target}\n`,
   );
   return 0;
 }
 
-function macosBootOptions(
-  parsed: ParsedBootArgs,
-  quiet: QuietRunState,
-): Parameters<typeof boot>[0] {
+function macosBootOptions(parsed: ParsedBootArgs): Parameters<typeof boot>[0] {
   return {
     guestOS: "macos",
     provider: parsed.provider as "apple-vz" | undefined,
     name: parsed.name,
-    detached: parsed.detached,
-    onLog: quiet.onLog,
-    timeoutMs: parsed.detached ? undefined : null,
+    detached: true,
     macos: {
       source: { kind: "prepared-bundle", path: macosBundlePath(parsed) },
-      ssh: { user: macosSshUser(parsed), identityFile: parsed.sshIdentityFile! },
+      ssh: {
+        user: macosSshUser(parsed),
+        identityFile: resolve(parsed.sshIdentityFile!),
+        host: parsed.sshHost,
+      },
       memoryMib: parsed.memory,
     },
   };

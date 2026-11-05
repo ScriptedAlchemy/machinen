@@ -944,10 +944,17 @@ describe("parseRunArgs --guest-os and macOS flags", () => {
       "/keys/id",
       "--ssh-user",
       "vmuser",
+      "--ssh-host",
+      "192.168.64.9",
     ]);
     expect(parsed.macosBundle).toBe("/bundles/prepared");
     expect(parsed.sshIdentityFile).toBe("/keys/id");
     expect(parsed.sshUser).toBe("vmuser");
+    expect(parsed.sshHost).toBe("192.168.64.9");
+  });
+
+  it("rejects a duplicate --ssh-host", () => {
+    expect(() => parseRunArgs(["--ssh-host", "a", "--ssh-host", "b"])).toThrow(ParseError);
   });
 
   it("rejects a duplicate --guest-os", () => {

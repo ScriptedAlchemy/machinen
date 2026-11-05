@@ -118,7 +118,7 @@ export const COMMANDS: CommandSpec[] = [
         type: "enum",
         values: ["linux", "macos"],
         description:
-          "Guest operating system. Defaults to linux. macos requires a prepared bundle and SSH.",
+          "Guest operating system. Defaults to linux. macos requires --detach, a prepared bundle, and SSH.",
       },
       {
         name: "--provider",
@@ -130,18 +130,24 @@ export const COMMANDS: CommandSpec[] = [
         name: "--macos-bundle",
         type: "string",
         description:
-          "Prepared macOS VM bundle directory. Required when --guest-os is macos. Format: a directory containing config.json.",
+          "Prepared macOS VM bundle directory. Required when --guest-os is macos. Format: a directory containing config.json. Each boot runs from an APFS clone, so the bundle is never written to.",
       },
       {
         name: "--ssh-key",
         type: "string",
         description:
-          "SSH identity file for a macOS guest. Never stored in the registry. Password auth is unsupported.",
+          "SSH identity file for a macOS guest. Recorded by path so later commands can reconnect, never by content. Password auth is unsupported.",
       },
       {
         name: "--ssh-user",
         type: "string",
         description: "SSH user for a macOS guest. Defaults to the current host user.",
+      },
+      {
+        name: "--ssh-host",
+        type: "string",
+        description:
+          "Address of a macOS guest. Defaults to discovery from the host's DHCP leases by the guest's MAC address.",
       },
       {
         name: "--json",
