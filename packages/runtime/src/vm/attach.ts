@@ -36,9 +36,8 @@ export interface AttachOptions {
    */
   onLog?: OnLog;
   /**
-   * SSH identity file for a macOS guest. Not persisted in the registry,
-   * so an attach handle needs it supplied again. Falls back to
-   * `MACHINEN_MACOS_SSH_KEY`.
+   * SSH identity file for a macOS guest. Falls back to
+   * `MACHINEN_MACOS_SSH_KEY`, then to the path the guest was booted with.
    */
   identityFile?: string;
   /** SSH user for a macOS guest. Defaults to the persisted endpoint user. */

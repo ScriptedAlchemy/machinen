@@ -20,7 +20,7 @@ export type ProviderId = "machinen-hvf" | "machinen-kvm" | "apple-vz";
 export interface GuestCapabilities {
   /** Run a one-shot command and return its streams plus exit code. */
   exec: boolean;
-  /** Open an interactive PTY. Ordinary SSH PTY is not a persistent session. */
+  /** Open an interactive PTY through `vm.execPty`. */
   pty: boolean;
   /**
    * Named sessions that survive a disconnect and can be reattached.
@@ -72,7 +72,7 @@ export const LINUX_CAPABILITIES: GuestCapabilities = {
  */
 export const MACOS_CAPABILITIES: GuestCapabilities = {
   exec: true,
-  pty: true,
+  pty: false,
   persistentSessions: false,
   files: true,
   snapshot: false,
@@ -96,8 +96,29 @@ export interface GuestProviderInfo {
   capabilities: GuestCapabilities;
   /**
    * Opaque provider-side reference. For the macOS provider this is the
-   * absolute path of the prepared VM bundle, which is what the runner
-   * needs to reload the same guest.
+   * absolute path of the prepared VM bundle the guest was cloned from.
    */
   providerRef?: string;
+}
+
+/**
+ * Non-secret state a second process needs to rejoin a macOS guest. Holds
+ * paths and addresses only: the identity file is recorded by path, never by
+ * content, and the known_hosts file is what keeps the host key pinned across
+ * processes.
+ */
+export interface MacosRegistryState {
+  /** Prepared bundle this instance was cloned from. Never written to. */
+  baseBundlePath: string;
+  /** Per-boot clone the runner owns. Removed when the guest stops. */
+  instanceDir: string;
+  statusPath: string;
+  logPath: string;
+  knownHostsPath: string;
+  macAddress: string;
+  sshUser: string;
+  sshPort: number;
+  identityFile: string;
+  /** Guest address. Absent until the guest has been found on the network. */
+  sshHost?: string;
 }

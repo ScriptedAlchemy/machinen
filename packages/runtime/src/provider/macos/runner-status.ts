@@ -6,17 +6,20 @@
 // guest is reachable.
 
 import { existsSync, readFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { BootError } from "../../errors.ts";
 
-export type RunnerState = "starting" | "running" | "stopping" | "stopped" | "failed";
+type RunnerState = "starting" | "running" | "stopping" | "stopped" | "failed";
 
-export interface RunnerStatus {
+interface RunnerStatus {
   state: RunnerState;
-  /** Guest address the runner observed, when it has one. */
-  address?: string;
+  /** MAC address of the guest's network device. */
+  macAddress?: string;
   /** Human-readable failure detail. Never contains secret material. */
   error?: string;
+  /** Who ended the guest: `guest` for a clean shutdown, `forced` otherwise. */
+  stopReason?: string;
   /** ms epoch the status was written. */
   updatedAt?: number;
 }
@@ -29,6 +32,8 @@ const VALID_STATES: readonly RunnerState[] = [
   "failed",
 ];
 
+const LOG_TAIL_BYTES = 2048;
+
 /** Read and validate a status file. Returns undefined when absent. */
 export function readRunnerStatus(path: string): RunnerStatus | undefined {
   if (!existsSync(path)) {
@@ -38,7 +43,6 @@ export function readRunnerStatus(path: string): RunnerStatus | undefined {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    // A partially written file is expected while the runner is starting.
     return undefined;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -50,16 +54,25 @@ export function readRunnerStatus(path: string): RunnerStatus | undefined {
     return undefined;
   }
   const status: RunnerStatus = { state: state as RunnerState };
-  if (typeof record.address === "string" && record.address.length > 0) {
-    status.address = record.address;
-  }
-  if (typeof record.error === "string" && record.error.length > 0) {
-    status.error = record.error;
+  for (const field of ["macAddress", "error", "stopReason"] as const) {
+    const value = record[field];
+    if (typeof value === "string" && value.length > 0) {
+      status[field] = value;
+    }
   }
   if (typeof record.updatedAt === "number") {
     status.updatedAt = record.updatedAt;
   }
   return status;
+}
+
+/** The end of the runner log, framed for an error message. Empty when absent. */
+export function describeRunnerLog(logPath: string | undefined): string {
+  if (!logPath || !existsSync(logPath)) {
+    return "";
+  }
+  const text = readFileSync(logPath, "utf8").slice(-LOG_TAIL_BYTES).trim();
+  return text ? `\nrunner log:\n${text}` : "";
 }
 
 /**
@@ -71,6 +84,7 @@ export async function waitForRunnerRunning(args: {
   timeoutMs: number;
   pollMs?: number;
   isAlive: () => boolean;
+  logPath?: string;
 }): Promise<RunnerStatus> {
   const deadline = Date.now() + args.timeoutMs;
   const pollMs = args.pollMs ?? 100;
@@ -85,7 +99,8 @@ export async function waitForRunnerRunning(args: {
       if (status.state === "failed") {
         throw new BootError(
           "PROVIDER_READINESS_FAILED",
-          `macOS runner failed before readiness. ${status.error ?? "no detail reported"}`,
+          `macOS runner failed before readiness. ${status.error ?? "no detail reported"}` +
+            describeRunnerLog(args.logPath),
         );
       }
     }
@@ -93,7 +108,7 @@ export async function waitForRunnerRunning(args: {
       throw new BootError(
         "PROVIDER_READINESS_FAILED",
         `macOS runner exited before reporting readiness. ` +
-          `Last state ${last?.state ?? "unreported"}.`,
+          `Last state ${last?.state ?? "unreported"}.${describeRunnerLog(args.logPath)}`,
       );
     }
     await delay(pollMs);
@@ -101,13 +116,6 @@ export async function waitForRunnerRunning(args: {
   throw new BootError(
     "PROVIDER_READINESS_FAILED",
     `macOS runner did not reach readiness within ${args.timeoutMs}ms. ` +
-      `Last state ${last?.state ?? "unreported"}.`,
+      `Last state ${last?.state ?? "unreported"}.${describeRunnerLog(args.logPath)}`,
   );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
-  });
 }

@@ -35,8 +35,14 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import debugLib from "debug";
+import { cleanupPathNative } from "./native/gc.ts";
 import { validatePid } from "./pid-validate.ts";
-import type { GuestCapabilities, GuestOS, ProviderId } from "./provider/types.ts";
+import type {
+  GuestCapabilities,
+  GuestOS,
+  MacosRegistryState,
+  ProviderId,
+} from "./provider/types.ts";
 
 const debug = debugLib("machinen:registry");
 
@@ -193,6 +199,8 @@ export interface RegistryEntry {
    * without re-probing. Absent means Linux defaults.
    */
   capabilities?: GuestCapabilities;
+  /** How a second process rejoins this guest. Set for `apple-vz` only. */
+  macos?: MacosRegistryState;
   /**
    * Total pages the lazy-pages rewriter (#266) marked PE_LAZY when
    * the VM was restored. Set on restore-derived entries, undefined
@@ -357,6 +365,21 @@ export function isAlive(pid: number): boolean {
 }
 
 /**
+ * Forget an entry whose process is gone. A macOS guest's clone can hold tens
+ * of gigabytes and nothing else would reclaim it once the entry is removed, so
+ * its recorded paths go with it instead of waiting for a `machinen gc` that
+ * could no longer find them.
+ */
+function dropDeadEntry(entry: RegistryEntry): void {
+  if (entry.guestOS === "macos") {
+    for (const path of entry.cleanupPaths ?? []) {
+      cleanupPathNative(path, false);
+    }
+  }
+  removeEntry(entry.pid);
+}
+
+/**
  * Whether a name pin pointing at `heldPid` should be treated as stale.
  *
  * A pin is stale when any of these is true:
@@ -454,7 +477,7 @@ export function list(): RegistryEntry[] {
       startedAt: entry.startedAt,
     });
     if (status !== "alive") {
-      removeEntry(entry.pid);
+      dropDeadEntry(entry);
       pruned++;
       continue;
     }
@@ -648,7 +671,7 @@ export function findEntry(query: { pid?: number; name?: string }): RegistryEntry
       startedAt: entry.startedAt,
     });
     if (status !== "alive") {
-      removeEntry(entry.pid);
+      dropDeadEntry(entry);
       return undefined;
     }
     return entry;

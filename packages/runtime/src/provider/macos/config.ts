@@ -13,7 +13,8 @@ import { BootError } from "../../errors.ts";
 export interface MacosBootOptions {
   /**
    * Prepared VM bundle. A directory containing `config.json` and the
-   * disk image it names. This is the only source kind the MVP accepts.
+   * members it names. This is the only source kind the MVP accepts. It is
+   * never written to: each boot runs from an APFS clone of it.
    */
   source: MacosSource;
   /** SSH transport settings. Key-based only. */
@@ -22,6 +23,11 @@ export interface MacosBootOptions {
   memoryMib?: number;
   /** Guest vCPU count. Defaults to 4. */
   cpuCount?: number;
+  /**
+   * How long to wait for the guest to answer over SSH after the runner starts,
+   * in ms. Defaults to 5 minutes.
+   */
+  readinessTimeoutMs?: number;
 }
 
 export type MacosSource = {
@@ -34,13 +40,16 @@ export interface MacosSshOptions {
   /** Guest user name. */
   user: string;
   /**
-   * Private key path. Never written to the registry, never passed on a
-   * command line, and never logged.
+   * Private key path. The path is recorded so a later process can reconnect,
+   * and is passed to ssh. The key's contents are never read or stored.
    */
   identityFile: string;
   /** Guest port. Defaults to 22. */
   port?: number;
-  /** Optional guest address override. Normally discovered from the runner. */
+  /**
+   * Guest address. Normally discovered from the host's DHCP leases by the
+   * MAC address the runner assigned, so set this only when that cannot work.
+   */
   host?: string;
 }
 
@@ -50,10 +59,10 @@ export interface MacosBundle {
   path: string;
   /** Absolute disk image path the bundle declares. */
   diskImage: string;
-  /** Absolute auxiliary-storage path when the bundle declares one. */
-  auxiliaryStorage?: string;
-  /** Absolute hardware-model path when the bundle declares one. */
-  hardwareModel?: string;
+  /** Absolute auxiliary-storage path. */
+  auxiliaryStorage: string;
+  /** Absolute hardware-model path. */
+  hardwareModel: string;
 }
 
 const REQUIRED_BUNDLE_FILES = ["config.json"] as const;
@@ -121,14 +130,8 @@ export function resolveMacosBundle(source: MacosSource, cwd: string = process.cw
   return {
     path,
     diskImage: resolveBundleMember(path, config.diskImage, "diskImage"),
-    auxiliaryStorage:
-      config.auxiliaryStorage === undefined
-        ? undefined
-        : resolveBundleMember(path, config.auxiliaryStorage, "auxiliaryStorage"),
-    hardwareModel:
-      config.hardwareModel === undefined
-        ? undefined
-        : resolveBundleMember(path, config.hardwareModel, "hardwareModel"),
+    auxiliaryStorage: resolveBundleMember(path, config.auxiliaryStorage, "auxiliaryStorage"),
+    hardwareModel: resolveBundleMember(path, config.hardwareModel, "hardwareModel"),
   };
 }
 

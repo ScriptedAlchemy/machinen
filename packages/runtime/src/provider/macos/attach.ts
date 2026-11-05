@@ -1,131 +1,92 @@
 // Reconstruct a macOS handle from the registry.
 //
-// This is the path a second process takes after `--detached` boot. It
-// rebuilds the transport from the persisted endpoint and re-derives
-// capabilities from the entry, so a provider that lost a capability
-// refuses instead of silently degrading.
+// This is the path a second process takes after a boot. It rejoins the guest
+// with the state the boot persisted: the host key the boot pinned, the instance
+// it created, and the identity of the runner it started. Anything that no
+// longer holds is refused rather than re-established.
 
-import { ExecError, RegistryError } from "../../errors.ts";
+import { BootError, ExecError, RegistryError } from "../../errors.ts";
 import type { RegistryEntry } from "../../registry.ts";
 import type { VmHandle } from "../../vm-handle.ts";
-import { MACOS_CAPABILITIES } from "../types.ts";
+import { MACOS_CAPABILITIES, type MacosRegistryState } from "../types.ts";
+import {
+  assertRunnerLive,
+  stopMacosGuest,
+  waitForRunnerExit,
+  type RunnerIdentity,
+} from "./control.ts";
 import { createMacosHandle } from "./handle.ts";
-import { createMacosTransport, makeTransportStateDir } from "./ssh.ts";
+import { createMacosTransport, hasPinnedHostKey, type MacosTransport } from "./ssh.ts";
 
-export interface MacosAttachOptions {
+interface MacosAttachOptions {
   entry: RegistryEntry;
-  /** SSH identity file. Not persisted, so the caller supplies it. */
+  /** SSH identity file. Defaults to the one the guest was booted with. */
   identityFile?: string;
-  /** Guest user name. Defaults to the user in the persisted endpoint. */
+  /** Guest user name. Defaults to the user the guest was booted with. */
   user?: string;
 }
 
 export async function attachMacosGuest(opts: MacosAttachOptions): Promise<VmHandle> {
-  const entry = opts.entry;
-  const endpoint = parseEndpoint(entry.socketPath);
-  if (!endpoint) {
+  const { entry } = opts;
+  const state = entry.macos;
+  if (!state || !entry.vmmExe) {
     throw new RegistryError(
       "REGISTRY_VM_NOT_FOUND",
-      `macOS registry entry ${entry.pid} has no usable SSH endpoint at ${entry.socketPath}.`,
+      `macOS registry entry ${entry.pid} has no provider state to rejoin the guest with.`,
     );
   }
-  const identityFile = opts.identityFile ?? process.env.MACHINEN_MACOS_SSH_KEY;
-  if (!identityFile) {
-    throw new ExecError(
-      "PROVIDER_TRANSPORT_FAILED",
-      "attach to a macOS guest needs an SSH identity file. " +
-        "Pass one explicitly or set MACHINEN_MACOS_SSH_KEY. " +
-        "Keys are never stored in the registry.",
-    );
-  }
-  const transport = createMacosTransport({
-    ssh: {
-      user: opts.user ?? endpoint.user,
-      identityFile,
-      port: endpoint.port,
-      host: endpoint.host,
-    },
-    host: endpoint.host,
-    stateDir: makeTransportStateDir(),
-  });
+  const identity: RunnerIdentity = {
+    pid: entry.pid,
+    exe: entry.vmmExe,
+    startedAt: entry.startedAt,
+  };
+  assertRunnerLive(identity);
+  const transport = state.sshHost
+    ? pinnedTransport(opts, state, state.sshHost)
+    : stillBootingTransport(entry.pid);
   return createMacosHandle({
     pid: entry.pid,
     name: entry.name,
     transport,
     capabilities: entry.capabilities ?? MACOS_CAPABILITIES,
-    wait: () => waitForPidExit(entry.pid),
-    kill: () => stopAttachedGuest(entry.pid, transport),
+    assertLive: () => assertRunnerLive(identity),
+    wait: () => waitForRunnerExit(identity, state.statusPath),
+    kill: () => stopMacosGuest({ identity, transport, instanceDir: state.instanceDir }),
   });
 }
 
-interface Endpoint {
-  user: string;
-  host: string;
-  port: number;
+function pinnedTransport(
+  opts: MacosAttachOptions,
+  state: MacosRegistryState,
+  host: string,
+): MacosTransport {
+  if (!hasPinnedHostKey(state.knownHostsPath)) {
+    throw new ExecError(
+      "PROVIDER_TRANSPORT_FAILED",
+      `no pinned host key for this guest at ${state.knownHostsPath}. ` +
+        "Trusting a new key here would let another machine answer for it, so attach refuses.",
+    );
+  }
+  return createMacosTransport({
+    user: opts.user ?? state.sshUser,
+    host,
+    port: state.sshPort,
+    identityFile: opts.identityFile ?? process.env.MACHINEN_MACOS_SSH_KEY ?? state.identityFile,
+    knownHostsPath: state.knownHostsPath,
+    hostKeyPolicy: "pinned",
+  });
 }
 
-function parseEndpoint(socketPath: string): Endpoint | undefined {
-  const at = socketPath.indexOf("@");
-  const colon = socketPath.lastIndexOf(":");
-  if (at <= 0 || colon <= at) {
-    return undefined;
-  }
-  const user = socketPath.slice(0, at);
-  const host = socketPath.slice(at + 1, colon);
-  const port = Number(socketPath.slice(colon + 1));
-  if (!user || !host || !Number.isInteger(port)) {
-    return undefined;
-  }
-  return { user, host, port };
-}
-
-async function waitForPidExit(
-  pid: number,
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  while (isAlive(pid)) {
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 200);
-      timer.unref?.();
-    });
-  }
-  return { code: null, signal: null };
-}
-
-async function stopAttachedGuest(
-  pid: number,
-  transport: ReturnType<typeof createMacosTransport>,
-): Promise<void> {
-  try {
-    await transport.exec("sudo -n shutdown -h now || true", { execTimeoutMs: 15_000 });
-  } catch {
-    // Fall through to signaling the runner.
-  }
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return;
-  }
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline && isAlive(pid)) {
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 200);
-      timer.unref?.();
-    });
-  }
-  if (isAlive(pid)) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Already gone.
-    }
-  }
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+/** A guest still booting can be stopped by signal, but has nothing to talk to yet. */
+function stillBootingTransport(pid: number): MacosTransport {
+  const refuse = (): never => {
+    throw new BootError(
+      "PROVIDER_READINESS_FAILED",
+      `macOS guest ${pid} is still booting and has no address yet.`,
+    );
+  };
+  return {
+    exec: async () => refuse(),
+    writeFile: async () => refuse(),
+  };
 }

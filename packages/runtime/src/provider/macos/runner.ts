@@ -1,39 +1,30 @@
 // Spawn and lifecycle for the Swift Virtualization.framework runner.
 //
-// One runner process per VM, so the registry PID is a real per-VM PID and
-// the existing `kill(pid, 0)` liveness and PID-recycling checks keep
-// working unchanged. The runner owns the guest; this module owns the
-// process and its status file.
+// One runner process per VM, so the registry PID is a real per-VM PID. The
+// runner is always detached: it gets its own session and writes to a log file
+// rather than pipes, so no live stream ties it to the process that started it.
 
-import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
-import { join } from "node:path";
 
 import { BootError } from "../../errors.ts";
-import type { MacosBundle } from "./config.ts";
+import type { MacosInstance } from "./instance.ts";
 
 const require_ = createRequire(import.meta.url);
 
-export interface RunnerSpawnOptions {
+interface RunnerSpawnOptions {
   /** Absolute path to the built runner executable. */
   binary: string;
-  bundle: MacosBundle;
+  instance: MacosInstance;
   memoryMib: number;
   cpuCount: number;
-  /** Directory the runner writes `status.json` into. */
-  stateDir: string;
-  /** Streaming console callback. */
-  onLog?: (chunk: Buffer) => void;
 }
 
 export interface SpawnedRunner {
   child: ChildProcess;
   pid: number;
-  statusPath: string;
-  /** Absolute bundle path, persisted as the registry providerRef. */
-  providerRef: string;
 }
 
 /**
@@ -76,29 +67,56 @@ export function resolveVzRunnerBinary(): string {
   }
 }
 
+/** Have the runner create a new machine identity, since only it can make a valid one. */
+export function createMachineIdentity(binary: string, path: string): void {
+  const result = spawnSync(binary, ["--create-identity", path], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new BootError(
+      "PROVIDER_IMAGE_INVALID",
+      `could not create a machine identity at ${path}. ${
+        result.error?.message ?? result.stderr.trim()
+      }`,
+      { cause: result.error },
+    );
+  }
+}
+
 export function spawnRunner(opts: RunnerSpawnOptions): SpawnedRunner {
-  const statusPath = join(opts.stateDir, "status.json");
-  const args = [
-    "--bundle",
-    opts.bundle.path,
-    "--memory-mib",
-    String(opts.memoryMib),
-    "--cpus",
-    String(opts.cpuCount),
-    "--status-file",
-    statusPath,
-  ];
-  const child = spawn(opts.binary, args, {
-    stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env },
+  const log = openSync(opts.instance.logPath, "a", 0o600);
+  let child: ChildProcess;
+  try {
+    child = spawn(
+      opts.binary,
+      [
+        "--bundle",
+        opts.instance.dir,
+        "--status-file",
+        opts.instance.statusPath,
+        "--memory-mib",
+        String(opts.memoryMib),
+        "--cpus",
+        String(opts.cpuCount),
+        "--mac-address",
+        opts.instance.macAddress,
+      ],
+      { detached: true, stdio: ["ignore", log, log] },
+    );
+  } finally {
+    closeSync(log);
+  }
+  // A failed spawn surfaces as an `error` event with no pid. Without a listener
+  // that event would crash the host process instead of failing this boot.
+  let spawnError: Error | undefined;
+  child.once("error", (err) => {
+    spawnError = err;
   });
-  if (opts.onLog) {
-    child.stdout?.on("data", opts.onLog);
-    child.stderr?.on("data", opts.onLog);
+  if (child.pid === undefined) {
+    throw new BootError(
+      "PROVIDER_READINESS_FAILED",
+      `macOS runner ${opts.binary} failed to spawn.${spawnError ? ` ${spawnError.message}` : ""}`,
+      { cause: spawnError },
+    );
   }
-  const pid = child.pid;
-  if (pid === undefined) {
-    throw new BootError("PROVIDER_READINESS_FAILED", "macOS runner failed to spawn.");
-  }
-  return { child, pid, statusPath, providerRef: opts.bundle.path };
+  child.unref();
+  return { child, pid: child.pid };
 }

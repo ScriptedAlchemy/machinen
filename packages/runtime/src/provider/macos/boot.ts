@@ -1,124 +1,99 @@
 // macOS guest boot.
 //
 // Reached from `boot()` only after the provider selector picks `apple-vz`,
-// so no Linux asset work has run. Order is deliberate: validate host,
-// validate the bundle, validate resources, spawn the runner, wait for a
-// real readiness signal, then open the SSH transport.
+// so no Linux asset work has run. Order is deliberate: validate everything
+// cheap, clone the bundle, start the runner and register it straight away so a
+// crash here cannot strand a running guest, then wait for a real readiness
+// signal, which is a command succeeding over SSH. Waits use referenced timers,
+// because the runner is unreferenced and nothing else keeps a CLI process alive.
 
-import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync, writeFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 
-import { BootError } from "../../errors.ts";
-import { claimName, removeEntry, writeEntry } from "../../registry.ts";
+import { BootError, RegistryError, isMachinenError } from "../../errors.ts";
+import { readProcessIdentity } from "../../pid-validate.ts";
+import { claimName, findEntry, patchEntry, removeEntry, writeEntry } from "../../registry.ts";
 import type { VmHandle } from "../../vm-handle.ts";
 import { assertProviderHostSupported, type ProviderSelection } from "../select.ts";
-import { MACOS_CAPABILITIES } from "../types.ts";
+import { MACOS_CAPABILITIES, type MacosRegistryState } from "../types.ts";
+import { waitForGuestAddress } from "./address.ts";
 import {
   resolveMacosBundle,
   validateMacosResources,
   validateMacosSsh,
-  type MacosBundle,
   type MacosBootOptions,
+  type MacosBundle,
 } from "./config.ts";
+import {
+  assertRunnerLive,
+  stopMacosGuest,
+  waitForRunnerExit,
+  type RunnerIdentity,
+} from "./control.ts";
 import { createMacosHandle } from "./handle.ts";
-import { resolveVzRunnerBinary, spawnRunner, type SpawnedRunner } from "./runner.ts";
-import { readRunnerStatus, waitForRunnerRunning } from "./runner-status.ts";
-import { createMacosTransport, makeTransportStateDir } from "./ssh.ts";
+import { createMacosInstance, type MacosInstance } from "./instance.ts";
+import {
+  createMachineIdentity,
+  resolveVzRunnerBinary,
+  spawnRunner,
+  type SpawnedRunner,
+} from "./runner.ts";
+import { describeRunnerLog, waitForRunnerRunning } from "./runner-status.ts";
+import { createMacosTransport, type MacosTransport } from "./ssh.ts";
 import type { BootOptions } from "../../vm/boot.ts";
 
-/** Guest port the exec agent would use. Not a session service. */
-const DEFAULT_READINESS_TIMEOUT_MS = 180_000;
+/** Cold boot of a fresh clone, including its first SSH answer. */
+const DEFAULT_READINESS_TIMEOUT_MS = 300_000;
+const ABORT_WAIT_MS = 5_000;
+const SSH_RETRY_MS = 1_000;
 
 export async function bootMacosGuest(
   opts: BootOptions,
   selection: ProviderSelection,
 ): Promise<VmHandle> {
   assertProviderHostSupported(selection);
-  const macos = opts.macos;
-  if (!macos) {
+  const macos = requireMacosOptions(opts);
+  rejectLinuxOnlyOptions(opts);
+  rejectAttachedBoot(opts);
+  validateMacosSsh(macos.ssh);
+  const resources = validateMacosResources(macos);
+  const base = resolveMacosBundle(macos.source, opts.cwd);
+  assertNameFree(opts.name);
+  const binary = resolveVzRunnerBinary();
+
+  const instance = createMacosInstance({
+    base,
+    createIdentity: (path) => createMachineIdentity(binary, path),
+  });
+  let runner: SpawnedRunner | undefined;
+  try {
+    runner = spawnRunner({ binary, instance, ...resources });
+    const identity = captureRunnerIdentity(runner.pid, binary);
+    const state = providerState(macos, base, instance);
+    registerGuest({ opts, base, instance, state, identity, memoryMib: resources.memoryMib });
+    const transport = await waitUntilReachable({ macos, instance, runner, identity, state });
+    return createMacosHandle({
+      pid: runner.pid,
+      name: opts.name,
+      transport,
+      assertLive: () => assertRunnerLive(identity),
+      wait: () => waitForRunnerExit(identity, instance.statusPath),
+      kill: () => stopMacosGuest({ identity, transport, instanceDir: instance.dir }),
+    });
+  } catch (err) {
+    await abortBoot(runner, instance);
+    throw err;
+  }
+}
+
+function requireMacosOptions(opts: BootOptions): MacosBootOptions {
+  if (!opts.macos) {
     throw new BootError(
       "PROVIDER_IMAGE_INVALID",
       'guestOS "macos" requires a `macos` configuration block with a prepared bundle and SSH settings.',
     );
   }
-  rejectLinuxOnlyOptions(opts);
-  validateMacosSsh(macos.ssh);
-  const resources = validateMacosResources(macos);
-  const bundle = resolveMacosBundle(macos.source, opts.cwd);
-
-  const stateDir = mkdtempSync(join(tmpdir(), "machinen-macos-runner-"));
-  const transportDir = makeTransportStateDir();
-  let spawned: SpawnedRunner | undefined;
-  let registered = false;
-  try {
-    spawned = spawnRunner({
-      binary: resolveVzRunnerBinary(),
-      bundle,
-      memoryMib: resources.memoryMib,
-      cpuCount: resources.cpuCount,
-      stateDir,
-      onLog: opts.onLog ? (chunk) => opts.onLog?.({ source: "guest-console", chunk }) : undefined,
-    });
-    await waitForRunnerRunning({
-      statusPath: spawned.statusPath,
-      timeoutMs: opts.timeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS,
-      isAlive: () => isRunnerAlive(spawned!),
-    });
-    const status = readRunnerStatus(spawned.statusPath);
-    const host = macos.ssh.host ?? status?.address;
-    if (!host) {
-      throw new BootError(
-        "PROVIDER_READINESS_FAILED",
-        "macOS runner reached running state without reporting a guest address. " +
-          "Set `macos.ssh.host` to skip discovery.",
-      );
-    }
-    const transport = createMacosTransport({ ssh: macos.ssh, host, stateDir: transportDir });
-    await assertSshReady(transport, opts.timeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS);
-
-    const runner = spawned;
-    claimOrThrow(opts.name, runner.pid);
-    writeEntry({
-      pid: runner.pid,
-      name: opts.name,
-      // No vsock UDS exists for this provider. An empty string would look
-      // like a broken bridge, so record the SSH endpoint instead.
-      socketPath: `${macos.ssh.user}@${host}:${macos.ssh.port ?? 22}`,
-      guestOS: "macos",
-      provider: selection.provider,
-      providerRef: runner.providerRef,
-      capabilities: MACOS_CAPABILITIES,
-      startedAt: Date.now(),
-      cleanupPaths: [stateDir, transportDir],
-    });
-    registered = true;
-
-    const handle = createMacosHandle({
-      pid: runner.pid,
-      name: opts.name,
-      transport,
-      wait: () => waitForRunnerExit(runner),
-      kill: () => stopRunner(runner, transport),
-    });
-    if (opts.detached) {
-      runner.child.unref();
-      runner.child.stdout?.destroy();
-      runner.child.stderr?.destroy();
-    }
-    return handle;
-  } catch (err) {
-    if (spawned) {
-      killQuietly(spawned);
-      if (registered) {
-        removeEntry(spawned.pid);
-      }
-    }
-    rmSync(stateDir, { recursive: true, force: true });
-    rmSync(transportDir, { recursive: true, force: true });
-    throw err;
-  }
+  return opts.macos;
 }
 
 const LINUX_ONLY_MACOS_OPTIONS: ReadonlyArray<{
@@ -154,103 +129,201 @@ function rejectLinuxOnlyOptions(opts: BootOptions): void {
   );
 }
 
-async function assertSshReady(
-  transport: ReturnType<typeof createMacosTransport>,
-  timeoutMs: number,
-): Promise<void> {
+/**
+ * A macOS guest has no console to attach to, and its runner deliberately
+ * outlives the process that started it, so an attached boot could only pretend.
+ */
+function rejectAttachedBoot(opts: BootOptions): void {
+  if (!opts.detached) {
+    throw new BootError(
+      "PROVIDER_UNSUPPORTED_OPERATION",
+      'guestOS "macos" only supports detached boots. Pass `detached: true`, ' +
+        "then drive the guest with exec and stop it with kill.",
+    );
+  }
+}
+
+function assertNameFree(name: string | undefined): void {
+  if (name && findEntry({ name })) {
+    throw nameInUse(name);
+  }
+}
+
+function nameInUse(name: string): RegistryError {
+  return new RegistryError(
+    "REGISTRY_NAME_IN_USE",
+    `boot: name ${JSON.stringify(name)} is already held by a live VM.`,
+  );
+}
+
+/**
+ * Record what the OS reports for the runner rather than what was asked for.
+ * Later liveness checks compare against the same source, so the check cannot
+ * disagree with itself about how the executable's name is reported.
+ */
+function captureRunnerIdentity(pid: number, binary: string): RunnerIdentity {
+  const observed = readProcessIdentity(pid);
+  return {
+    pid,
+    exe: observed?.exeBase ?? binary,
+    startedAt: observed?.startedAtMs ?? Date.now(),
+  };
+}
+
+function providerState(
+  macos: MacosBootOptions,
+  base: MacosBundle,
+  instance: MacosInstance,
+): MacosRegistryState {
+  return {
+    baseBundlePath: base.path,
+    instanceDir: instance.dir,
+    statusPath: instance.statusPath,
+    logPath: instance.logPath,
+    knownHostsPath: instance.knownHostsPath,
+    macAddress: instance.macAddress,
+    sshUser: macos.ssh.user,
+    sshPort: macos.ssh.port ?? 22,
+    identityFile: macos.ssh.identityFile,
+  };
+}
+
+function registerGuest(args: {
+  opts: BootOptions;
+  base: MacosBundle;
+  instance: MacosInstance;
+  state: MacosRegistryState;
+  identity: RunnerIdentity;
+  memoryMib: number;
+}): void {
+  const { opts, identity, state } = args;
+  if (opts.name && !claimName(opts.name, identity.pid)) {
+    throw nameInUse(opts.name);
+  }
+  writeEntry({
+    pid: identity.pid,
+    name: opts.name,
+    // No vsock UDS exists for this provider. An empty string would look like a
+    // broken bridge, so this names the SSH endpoint instead.
+    socketPath: sshEndpoint(state),
+    vmmExe: identity.exe,
+    startedAt: identity.startedAt,
+    memoryCeilingMib: args.memoryMib,
+    guestOS: "macos",
+    provider: "apple-vz",
+    providerRef: args.base.path,
+    capabilities: MACOS_CAPABILITIES,
+    macos: state,
+    cleanupPaths: [args.instance.dir],
+  });
+}
+
+function sshEndpoint(state: MacosRegistryState): string {
+  return `${state.sshUser}@${state.sshHost ?? "pending"}:${state.sshPort}`;
+}
+
+async function waitUntilReachable(args: {
+  macos: MacosBootOptions;
+  instance: MacosInstance;
+  runner: SpawnedRunner;
+  identity: RunnerIdentity;
+  state: MacosRegistryState;
+}): Promise<MacosTransport> {
+  const { macos, instance, runner, identity, state } = args;
+  const timeoutMs = macos.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
+  const isAlive = () => runner.child.exitCode === null && runner.child.signalCode === null;
+
+  await waitForRunnerRunning({
+    statusPath: instance.statusPath,
+    timeoutMs,
+    isAlive,
+    logPath: instance.logPath,
+  });
+  const host =
+    macos.ssh.host ??
+    (await waitForGuestAddress({ macAddress: instance.macAddress, deadline, isAlive }));
+  const located = { ...state, sshHost: host };
+  patchEntry(identity.pid, { socketPath: sshEndpoint(located), macos: located });
+
+  writeFileSync(instance.knownHostsPath, "", { flag: "a", mode: 0o600 });
+  const endpoint = {
+    user: state.sshUser,
+    host,
+    port: state.sshPort,
+    identityFile: state.identityFile,
+    knownHostsPath: instance.knownHostsPath,
+  };
+  await assertSshReady({
+    transport: createMacosTransport({ ...endpoint, hostKeyPolicy: "trust-on-first-use" }),
+    deadline,
+    isAlive,
+    logPath: instance.logPath,
+  });
+  return createMacosTransport({ ...endpoint, hostKeyPolicy: "pinned" });
+}
+
+async function assertSshReady(args: {
+  transport: MacosTransport;
+  deadline: number;
+  isAlive: () => boolean;
+  logPath: string;
+}): Promise<void> {
   let lastError: unknown;
-  while (Date.now() < deadline) {
+  while (Date.now() < args.deadline && args.isAlive()) {
     try {
-      const result = await transport.exec("true", {
+      const result = await args.transport.exec("true", {
         connectTimeoutMs: 5_000,
-        execTimeoutMs: 10_000,
+        execTimeoutMs: 15_000,
       });
       if (result.exitCode === 0) {
         return;
       }
       lastError = new Error(result.stderr || `ssh exited ${result.exitCode}`);
     } catch (err) {
+      if (isMachinenError(err) && !err.retryable) {
+        throw err;
+      }
       lastError = err;
     }
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 500);
-      timer.unref?.();
-    });
+    await delay(SSH_RETRY_MS);
   }
   throw new BootError(
     "PROVIDER_TRANSPORT_FAILED",
     "macOS guest never answered over SSH. Check the guest's Remote Login setting, " +
       `the identity file, and the reported address. Last error: ${
         lastError instanceof Error ? lastError.message : String(lastError)
-      }`,
+      }${describeRunnerLog(args.logPath)}`,
     { cause: lastError },
   );
 }
 
-function claimOrThrow(name: string | undefined, pid: number): void {
-  if (!name) {
-    return;
+/**
+ * Undo a failed boot. The runner has to be gone before its instance is removed,
+ * since it holds the disk open and may still be writing to it.
+ */
+async function abortBoot(
+  runner: SpawnedRunner | undefined,
+  instance: MacosInstance,
+): Promise<void> {
+  if (runner) {
+    await killAndWait(runner);
+    removeEntry(runner.pid);
   }
-  if (claimName(name, pid)) {
-    return;
-  }
-  throw new BootError(
-    "REGISTRY_NAME_IN_USE",
-    `boot: name ${JSON.stringify(name)} is already held by a live VM.`,
-  );
+  rmSync(instance.dir, { recursive: true, force: true });
 }
 
-function isRunnerAlive(runner: SpawnedRunner): boolean {
-  return runner.child.exitCode === null && runner.child.signalCode === null;
-}
-
-function waitForRunnerExit(
-  runner: SpawnedRunner,
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  if (runner.child.exitCode !== null || runner.child.signalCode !== null) {
-    return Promise.resolve({ code: runner.child.exitCode, signal: runner.child.signalCode });
+async function killAndWait(runner: SpawnedRunner): Promise<void> {
+  const { child } = runner;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
   }
-  return new Promise((resolve) => {
-    runner.child.once("exit", (code, signal) => resolve({ code, signal }));
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ABORT_WAIT_MS);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.kill("SIGKILL");
   });
 }
-
-async function stopRunner(
-  runner: SpawnedRunner,
-  transport: ReturnType<typeof createMacosTransport>,
-): Promise<void> {
-  try {
-    await transport.exec("sudo -n shutdown -h now || true", { execTimeoutMs: 15_000 });
-  } catch {
-    // Guest-side shutdown is best effort; the runner still gets signaled.
-  }
-  runner.child.kill("SIGTERM");
-  const exited = await Promise.race([
-    waitForRunnerExit(runner).then(() => true),
-    new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), 30_000);
-      timer.unref?.();
-    }),
-  ]);
-  if (!exited) {
-    runner.child.kill("SIGKILL");
-    await waitForRunnerExit(runner);
-  }
-  removeEntry(runner.pid);
-}
-
-function killQuietly(runner: SpawnedRunner): void {
-  try {
-    runner.child.kill("SIGKILL");
-  } catch {
-    // Already gone.
-  }
-}
-
-/** Session nonce reserved for a future Darwin agent handshake. */
-export function makeSessionNonce(): string {
-  return randomBytes(16).toString("hex");
-}
-
-export type { MacosBootOptions, MacosBundle };

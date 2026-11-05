@@ -3,7 +3,8 @@
 // runtime's contract: validation order, readiness, cleanup, and typed
 // refusals.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -126,6 +127,22 @@ describe("macOS bundle validation", () => {
     })();
     expect((err as Error).message).toContain("absent.img");
   });
+
+  it.each(["auxiliaryStorage", "hardwareModel"])("refuses a bundle with no %s", (member) => {
+    const path = makeBundle();
+    const config = JSON.parse(readFileSync(join(path, "config.json"), "utf8"));
+    delete config[member];
+    writeFileSync(join(path, "config.json"), JSON.stringify(config));
+    const err = (() => {
+      try {
+        resolveMacosBundle({ kind: "prepared-bundle", path });
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect((err as { code?: string }).code).toBe("PROVIDER_IMAGE_INVALID");
+    expect((err as Error).message).toContain(member);
+  });
 });
 
 describe("macOS SSH and resource validation", () => {
@@ -194,10 +211,10 @@ describe("runner status and readiness", () => {
     expect(readRunnerStatus(path)).toBeUndefined();
   });
 
-  it("parses a running status with an address", () => {
+  it("parses a running status with its MAC address", () => {
     const path = join(root, "status.json");
-    writeFileSync(path, JSON.stringify({ state: "running", address: "192.168.64.4" }));
-    expect(readRunnerStatus(path)).toEqual({ state: "running", address: "192.168.64.4" });
+    writeFileSync(path, JSON.stringify({ state: "running", macAddress: "02:00:00:00:00:01" }));
+    expect(readRunnerStatus(path)).toEqual({ state: "running", macAddress: "02:00:00:00:00:01" });
   });
 
   it("rejects an unknown state", () => {
@@ -208,14 +225,50 @@ describe("runner status and readiness", () => {
 
   it("resolves readiness once the runner reports running", async () => {
     const path = join(root, "status.json");
-    writeFileSync(path, JSON.stringify({ state: "running", address: "10.0.0.2" }));
+    writeFileSync(path, JSON.stringify({ state: "running", macAddress: "02:00:00:00:00:01" }));
     const status = await waitForRunnerRunning({
       statusPath: path,
       timeoutMs: 1000,
       isAlive: () => true,
     });
     expect(status.state).toBe("running");
-    expect(status.address).toBe("10.0.0.2");
+    expect(status.macAddress).toBe("02:00:00:00:00:01");
+  });
+
+  it("includes the runner log when the runner dies before readiness", async () => {
+    const logPath = join(root, "runner.log");
+    writeFileSync(logPath, "machinen-vz-runner. invalid bundle. no disk\n");
+    const err = await waitForRunnerRunning({
+      statusPath: join(root, "absent.json"),
+      timeoutMs: 1000,
+      isAlive: () => false,
+      logPath,
+    }).catch((e) => e);
+    expect((err as Error).message).toContain("invalid bundle. no disk");
+  });
+
+  it("keeps a process alive while it waits, with nothing else holding it open", () => {
+    // The runner is detached and unreferenced. A CLI waiting on it has no other
+    // active handle, so an unreferenced poll timer would exit it mid-boot.
+    const script = `
+      import { waitForRunnerRunning } from ${JSON.stringify(
+        new URL("../provider/macos/runner-status.ts", import.meta.url).href,
+      )};
+      await waitForRunnerRunning({
+        statusPath: "/nonexistent/status.json",
+        timeoutMs: 400,
+        pollMs: 50,
+        isAlive: () => true,
+      }).catch(() => console.log("settled"));
+    `;
+    const result = spawnSync(
+      process.execPath,
+      ["--no-warnings", "--experimental-strip-types", "--input-type=module", "-e", script],
+      { encoding: "utf8" },
+    );
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("settled");
+    expect(result.status).toBe(0);
   });
 
   it("fails readiness on a failed status", async () => {

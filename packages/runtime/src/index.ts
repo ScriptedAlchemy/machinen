@@ -113,6 +113,7 @@ export type {
   GuestCapabilities,
   GuestOS,
   GuestProviderInfo,
+  MacosRegistryState,
   ProviderId,
 } from "./provider/types.ts";
 export { resolveGuestOS, resolveProviderId, selectProvider } from "./provider/select.ts";

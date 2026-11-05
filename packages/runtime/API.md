@@ -135,6 +135,7 @@
 - [`MACOS_CAPABILITIES`](#macos_capabilities)
 - [`MachinenErrorOptions`](#machinenerroroptions)
 - [`MacosBootOptions`](#macosbootoptions)
+- [`MacosRegistryState`](#macosregistrystate)
 - [`MacosSource`](#macossource)
 - [`MacosSshOptions`](#macossshoptions)
 - [`MemoryStats`](#memorystats)
@@ -2682,7 +2683,8 @@ Options accepted under `boot({ macos: ... })`.
 > **source**: [`MacosSource`](#macossource)
 
 Prepared VM bundle. A directory containing `config.json` and the
-disk image it names. This is the only source kind the MVP accepts.
+members it names. This is the only source kind the MVP accepts. It is
+never written to: each boot runs from an APFS clone of it.
 
 ##### ssh
 
@@ -2702,6 +2704,13 @@ Guest RAM in MiB. Defaults to 4096.
 
 Guest vCPU count. Defaults to 4.
 
+##### readinessTimeoutMs?
+
+> `optional` **readinessTimeoutMs?**: `number`
+
+How long to wait for the guest to answer over SSH after the runner starts,
+in ms. Defaults to 5 minutes.
+
 ***
 
 ### MacosSshOptions
@@ -2718,8 +2727,8 @@ Guest user name.
 
 > **identityFile**: `string`
 
-Private key path. Never written to the registry, never passed on a
-command line, and never logged.
+Private key path. The path is recorded so a later process can reconnect,
+and is passed to ssh. The key's contents are never read or stored.
 
 ##### port?
 
@@ -2731,7 +2740,8 @@ Guest port. Defaults to 22.
 
 > `optional` **host?**: `string`
 
-Optional guest address override. Normally discovered from the runner.
+Guest address. Normally discovered from the host's DHCP leases by the
+MAC address the runner assigned, so set this only when that cannot work.
 
 ***
 
@@ -2768,7 +2778,7 @@ Run a one-shot command and return its streams plus exit code.
 
 > **pty**: `boolean`
 
-Open an interactive PTY. Ordinary SSH PTY is not a persistent session.
+Open an interactive PTY through `vm.execPty`.
 
 ##### persistentSessions
 
@@ -2862,8 +2872,64 @@ Registry and API metadata for a guest. All fields optional on read.
 > `optional` **providerRef?**: `string`
 
 Opaque provider-side reference. For the macOS provider this is the
-absolute path of the prepared VM bundle, which is what the runner
-needs to reload the same guest.
+absolute path of the prepared VM bundle the guest was cloned from.
+
+***
+
+### MacosRegistryState
+
+Non-secret state a second process needs to rejoin a macOS guest. Holds
+paths and addresses only: the identity file is recorded by path, never by
+content, and the known_hosts file is what keeps the host key pinned across
+processes.
+
+#### Properties
+
+##### baseBundlePath
+
+> **baseBundlePath**: `string`
+
+Prepared bundle this instance was cloned from. Never written to.
+
+##### instanceDir
+
+> **instanceDir**: `string`
+
+Per-boot clone the runner owns. Removed when the guest stops.
+
+##### statusPath
+
+> **statusPath**: `string`
+
+##### logPath
+
+> **logPath**: `string`
+
+##### knownHostsPath
+
+> **knownHostsPath**: `string`
+
+##### macAddress
+
+> **macAddress**: `string`
+
+##### sshUser
+
+> **sshUser**: `string`
+
+##### sshPort
+
+> **sshPort**: `number`
+
+##### identityFile
+
+> **identityFile**: `string`
+
+##### sshHost?
+
+> `optional` **sshHost?**: `string`
+
+Guest address. Absent until the guest has been found on the network.
 
 ***
 
@@ -3395,6 +3461,12 @@ it is the absolute prepared-bundle path. Never holds secrets.
 What the owning provider actually implements, captured at boot so an
 `attach()` from another process can refuse unsupported operations
 without re-probing. Absent means Linux defaults.
+
+##### macos?
+
+> `optional` **macos?**: [`MacosRegistryState`](#macosregistrystate)
+
+How a second process rejoins this guest. Set for `apple-vz` only.
 
 ##### lazyPagesTotal?
 
@@ -4914,7 +4986,7 @@ macOS provider configuration. Required when `guestOS` is `"macos"`.
 
 ###### Inherited from
 
-[`BootOptions`](#bootoptions).[`macos`](#macos-1)
+[`BootOptions`](#bootoptions).[`macos`](#macos-2)
 
 ##### image?
 
@@ -4963,9 +5035,8 @@ called `boot()`), so only `exec-stdout` / `exec-stderr` sources fire.
 
 > `optional` **identityFile?**: `string`
 
-SSH identity file for a macOS guest. Not persisted in the registry,
-so an attach handle needs it supplied again. Falls back to
-`MACHINEN_MACOS_SSH_KEY`.
+SSH identity file for a macOS guest. Falls back to
+`MACHINEN_MACOS_SSH_KEY`, then to the path the guest was booted with.
 
 ##### sshUser?
 
@@ -5867,7 +5938,7 @@ macOS provider configuration. Required when `guestOS` is `"macos"`.
 
 ###### Inherited from
 
-[`BootOptions`](#bootoptions).[`macos`](#macos-1)
+[`BootOptions`](#bootoptions).[`macos`](#macos-2)
 
 ##### snapDir
 

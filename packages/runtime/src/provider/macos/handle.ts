@@ -8,40 +8,44 @@
 import { PassThrough } from "node:stream";
 
 import { ExecError } from "../../errors.ts";
-import type { VsockExecPtyHandle, VsockExecPtyOptions, VsockExecResult } from "../../exec.ts";
-import type { VmHandle, MemoryStats, WriteFileOptions } from "../../vm-handle.ts";
+import type { VsockExecOptions, VsockExecPtyHandle, VsockExecPtyOptions } from "../../exec.ts";
+import type { VmHandle, MemoryStats } from "../../vm-handle.ts";
 import { MACOS_CAPABILITIES, type GuestCapabilities } from "../types.ts";
 import type { MacosTransport } from "./ssh.ts";
 
-export interface MacosHandleOptions {
+interface MacosHandleOptions {
   pid: number;
   name?: string;
   transport: MacosTransport;
   capabilities?: GuestCapabilities;
+  /** Throws when the runner behind this handle is no longer the one that was booted. */
+  assertLive: () => void;
   /** Resolves when the runner process exits. */
   wait: () => Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
-  /** Ask the runner to stop the guest, then force it. */
+  /** Shut the guest down, escalating as needed, and release its instance. */
   kill: () => Promise<void>;
 }
 
 export function createMacosHandle(opts: MacosHandleOptions): VmHandle {
   const capabilities = opts.capabilities ?? MACOS_CAPABILITIES;
-  const exec = (cmd: string, execOpts?: Parameters<MacosTransport["exec"]>[1]) =>
-    opts.transport.exec(cmd, execOpts);
+  const exec = (cmd: string, execOpts?: VsockExecOptions) => {
+    opts.assertLive();
+    return opts.transport.exec(cmd, execOpts);
+  };
 
   return {
     pid: opts.pid,
     name: opts.name,
     // A macOS guest has no VMM console streams in this process. Empty
     // streams keep the property contract without implying data.
-    stdin: inertWritable(),
-    stdout: inertReadable(),
-    stderr: inertReadable(),
+    stdin: inertStream(),
+    stdout: inertStream(),
+    stderr: inertStream(),
 
     wait: opts.wait,
     kill: opts.kill,
     async detach() {
-      // The runner outlives this process by design; nothing local to unref.
+      // The runner is always detached, so this handle holds nothing to release.
     },
     async output() {
       return "";
@@ -50,18 +54,38 @@ export function createMacosHandle(opts: MacosHandleOptions): VmHandle {
       return "";
     },
 
-    exec(cmd, execOpts) {
-      return execOrThrow(exec, cmd, execOpts);
+    async exec(cmd, execOpts) {
+      const result = await exec(cmd, execOpts);
+      if (result.exitCode !== 0) {
+        throw new ExecError(
+          "EXEC_NONZERO_EXIT",
+          `vm.exec failed (code ${result.exitCode}): ${cmd}\nstderr:\n${result.stderr}`,
+        );
+      }
+      return result;
     },
-    execRaw(cmd, execOpts) {
+    async execRaw(cmd, execOpts) {
       return exec(cmd, execOpts);
     },
 
     execPty(_cmd: string, _ptyOpts: VsockExecPtyOptions): VsockExecPtyHandle {
       throw unsupported(
         "execPty",
-        "an interactive PTY over SSH is not a Machinen persistent session. " +
-          "Use `machinen exec --tty` for an SSH PTY, or wait for the Darwin session service.",
+        "this provider has no PTY transport. Run commands without --tty.",
+      );
+    },
+
+    async listSessions() {
+      throw unsupported(
+        "listSessions",
+        "persistent sessions need a guest session service, which macOS guests do not have.",
+      );
+    },
+
+    async killSession() {
+      throw unsupported(
+        "killSession",
+        "persistent sessions need a guest session service, which macOS guests do not have.",
       );
     },
 
@@ -69,7 +93,8 @@ export function createMacosHandle(opts: MacosHandleOptions): VmHandle {
       if (!capabilities.files) {
         throw unsupported("writeFile", "this provider has no file transport.");
       }
-      await writeFileOverSsh(exec, guestPath, contents, writeOpts);
+      opts.assertLive();
+      await opts.transport.writeFile(guestPath, contents, writeOpts);
     },
 
     async memoryStats(): Promise<MemoryStats> {
@@ -96,49 +121,6 @@ export function createMacosHandle(opts: MacosHandleOptions): VmHandle {
   };
 }
 
-async function execOrThrow(
-  exec: (cmd: string, opts?: Parameters<MacosTransport["exec"]>[1]) => Promise<VsockExecResult>,
-  cmd: string,
-  execOpts?: Parameters<MacosTransport["exec"]>[1],
-): Promise<VsockExecResult> {
-  const result = await exec(cmd, execOpts);
-  if (result.exitCode !== 0) {
-    throw new ExecError(
-      "EXEC_NONZERO_EXIT",
-      `vm.exec failed (code ${result.exitCode}): ${cmd}\nstderr:\n${result.stderr}`,
-    );
-  }
-  return result;
-}
-
-async function writeFileOverSsh(
-  exec: (cmd: string, opts?: Parameters<MacosTransport["exec"]>[1]) => Promise<VsockExecResult>,
-  guestPath: string,
-  contents: Buffer | string,
-  writeOpts?: WriteFileOptions,
-): Promise<void> {
-  const payload = typeof contents === "string" ? Buffer.from(contents) : contents;
-  const encoded = payload.toString("base64");
-  const dir = guestPath.slice(0, guestPath.lastIndexOf("/")) || "/";
-  const mode = writeOpts?.mode === undefined ? "" : ` && chmod ${writeOpts.mode.toString(8)} `;
-  const append = writeOpts?.append ? ">>" : ">";
-  const script =
-    `mkdir -p ${shellQuote(dir)} && ` +
-    `printf %s ${shellQuote(encoded)} | base64 -d ${append} ${shellQuote(guestPath)}` +
-    (mode ? `${mode}${shellQuote(guestPath)}` : "");
-  const result = await exec(script);
-  if (result.exitCode !== 0) {
-    throw new ExecError(
-      "EXEC_NONZERO_EXIT",
-      `writeFile failed (code ${result.exitCode}): ${guestPath}\nstderr:\n${result.stderr}`,
-    );
-  }
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
 function unsupported(method: string, detail: string): Error {
   return new ExecError(
     "PROVIDER_UNSUPPORTED_OPERATION",
@@ -146,13 +128,7 @@ function unsupported(method: string, detail: string): Error {
   );
 }
 
-function inertWritable(): VmHandle["stdin"] {
-  const stream = new PassThrough();
-  stream.end();
-  return stream;
-}
-
-function inertReadable(): VmHandle["stdout"] {
+function inertStream(): PassThrough {
   const stream = new PassThrough();
   stream.end();
   return stream;

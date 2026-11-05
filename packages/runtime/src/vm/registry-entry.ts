@@ -12,7 +12,7 @@ import type { BootOptions } from "./boot.ts";
 import type { ResolvedCpuResourcePolicy } from "./cpu-resources.ts";
 import type { ResolvedLiveMount } from "./bundle.ts";
 
-export interface LinuxRegistryArgs {
+interface LinuxRegistryArgs {
   childPid: number;
   vmName: string | undefined;
   vsockUdsPath: string;
@@ -43,14 +43,14 @@ export interface LinuxRegistryArgs {
   nested: boolean | undefined;
 }
 
-export interface MountDiskPaths {
+interface MountDiskPaths {
   lowerPath: string;
   upperPath: string;
   guest: string;
   upperSizeBytes: number;
 }
 
-export function linuxProviderId(): ProviderId {
+function linuxProviderId(): ProviderId {
   return process.platform === "darwin" ? "machinen-hvf" : "machinen-kvm";
 }
 

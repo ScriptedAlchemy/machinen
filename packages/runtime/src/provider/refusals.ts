@@ -21,13 +21,13 @@ const MACOS_REASONS = {
     "this provider implements no restore.",
 } as const;
 
-export type RefusedOperation = keyof typeof MACOS_REASONS;
+type RefusedOperation = keyof typeof MACOS_REASONS;
 
 /**
  * Throw when the guest OS cannot perform `operation`. Linux is always
  * allowed, so this is a no-op on the default path.
  */
-export function assertOperationSupported(
+function assertOperationSupported(
   guestOS: GuestOS | undefined,
   operation: RefusedOperation,
   makeError: (message: string) => Error = defaultError,

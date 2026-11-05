@@ -54,10 +54,6 @@ export function selectProvider(opts: { guestOS?: string; provider?: string }): P
   return { guestOS, provider: resolveProviderId(guestOS, opts.provider) };
 }
 
-export function isLinuxProvider(selection: ProviderSelection): boolean {
-  return selection.guestOS === "linux";
-}
-
 /**
  * macOS guests run only on Apple silicon. Checked before any spawn so the
  * failure names the host rather than surfacing later as a missing binary.
