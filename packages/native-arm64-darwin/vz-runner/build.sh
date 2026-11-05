@@ -9,6 +9,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 out="${here}/bin"
 identity="${MACHINEN_VZ_SIGN_IDENTITY:--}"
+binary="${out}/machinen-vz-runner"
 
 mkdir -p "${out}"
 
@@ -17,7 +18,8 @@ swiftc \
   -target arm64-apple-macos13.0 \
   -framework Virtualization \
   -framework Foundation \
-  -o "${out}/machinen-vz-runner" \
+  -o "${binary}" \
+  "${here}/Sources/RunnerCore.swift" \
   "${here}/Sources/main.swift"
 
 codesign \
@@ -25,7 +27,12 @@ codesign \
   --sign "${identity}" \
   --entitlements "${here}/entitlements.plist" \
   --options runtime \
-  "${out}/machinen-vz-runner"
+  "${binary}"
 
-codesign --verify --strict "${out}/machinen-vz-runner"
-"${out}/machinen-vz-runner" --version
+codesign --verify --strict "${binary}"
+if ! codesign --display --entitlements - --xml "${binary}" 2>/dev/null |
+  grep -q "com.apple.security.virtualization"; then
+  echo "error: ${binary} is missing the virtualization entitlement" >&2
+  exit 1
+fi
+"${binary}" --version
