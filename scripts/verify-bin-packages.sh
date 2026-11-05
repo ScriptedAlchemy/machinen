@@ -104,6 +104,7 @@ check_pkg() {
 #   vmm/guest/{init,exec-agent,machinen-*}  guest binaries and restore worker
 #       the runtime reads as data to pack into the initramfs cpio.
 #   e2fsprogs/bin/mke2fs, squashfs/bin/mksquashfs  host binaries node spawns.
+#   vz-runner/bin/machinen-vz-runner  macOS guest runner, Darwin package only.
 for pkg in native-arm64-darwin native-arm64-linux native-x64-linux; do
   check_pkg "$pkg" \
     vmm/bin/machinen-vm \
@@ -121,6 +122,11 @@ for pkg in native-arm64-darwin native-arm64-linux native-x64-linux; do
     vmm/guest/machinen-supervisor \
     vmm/guest/machinen-restore
 done
+
+# The VZ runner is a Virtualization.framework client, so only the Darwin
+# package carries it. Its signature is checked where it is built, in
+# vz-runner/build.sh, because this script also runs on Linux.
+check_pkg native-arm64-darwin vz-runner/bin/machinen-vz-runner
 
 if [ "$failed" -ne 0 ]; then
   echo "==> verify-bin-packages: FAIL"
