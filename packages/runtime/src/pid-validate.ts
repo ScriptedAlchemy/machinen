@@ -52,12 +52,14 @@ export function readProcessIdentity(pid: number): ProcessIdentity | undefined {
   return fromNativeIdentity(readProcessIdentityNative(pid));
 }
 
-function fromNativeIdentity(identity: ProcessIdentity | undefined): ProcessIdentity | undefined {
+function fromNativeIdentity(
+  identity: ReturnType<typeof readProcessIdentityNative>,
+): ProcessIdentity | undefined {
   if (!identity) {
     return undefined;
   }
   return {
     exeBase: identity.exeBase,
-    startedAtMs: identity.startedAtMs,
+    startedAtMs: identity.startedAtMs ?? undefined,
   };
 }

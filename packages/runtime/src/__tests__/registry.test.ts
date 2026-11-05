@@ -16,7 +16,6 @@ import {
   claimName,
   findEntry,
   isAlive,
-  listAll,
   patchEntry,
   readEntry,
   removeEntry,
@@ -105,7 +104,7 @@ describe("registry primitives", () => {
       providerRef: "/bundles/prepared",
       capabilities: {
         exec: true,
-        pty: true,
+        pty: false,
         persistentSessions: false,
         files: true,
         snapshot: false,
@@ -138,20 +137,16 @@ describe("registry primitives", () => {
     expect(read?.name).toBe("legacy-vm");
   });
 
-  it("keeps a legacy entry readable through listAll without provider fields", () => {
-    // `list()` also runs pid-recycling checks, which depend on the native
-    // helper's identity payload. This asserts the compatibility property the
-    // entry shape owns: a legacy record with no guestOS still reads back.
+  it("lists a live legacy entry with no provider fields", () => {
     const legacy = {
       pid: process.pid,
       name: "legacy-vm",
       socketPath: "/tmp/legacy.sock",
-      startedAt: 1_700_000_000_000,
+      startedAt: readProcessIdentity(process.pid)!.startedAtMs!,
     };
     mkdirSync(join(scratchDir, String(process.pid)), { recursive: true });
     writeFileSync(join(scratchDir, String(process.pid), "meta.json"), JSON.stringify(legacy));
-    const entries = listAll();
-    const found = entries.find((entry) => entry.pid === process.pid);
+    const found = list().find((entry) => entry.pid === process.pid);
     expect(found?.name).toBe("legacy-vm");
     expect(found?.guestOS).toBeUndefined();
   });

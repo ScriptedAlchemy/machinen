@@ -5,7 +5,8 @@ type NativePidStatus = "alive" | "dead" | "recycled";
 
 interface NativeProcessIdentity {
   exeBase: string;
-  startedAtMs?: number;
+  /** Null from the helper when the OS start time could not be read. */
+  startedAtMs?: number | null;
 }
 
 interface PidValidateResponse {
@@ -69,5 +70,5 @@ function isNativeProcessIdentity(value: unknown): value is NativeProcessIdentity
 }
 
 function optionalNumber(value: unknown): boolean {
-  return value === undefined || typeof value === "number";
+  return value === undefined || value === null || typeof value === "number";
 }
