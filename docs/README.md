@@ -17,6 +17,7 @@ Then dive deeper:
 - [Networking](./guides/networking.md) — port forwards and outbound traffic via gvproxy
 - [Nested virtualization](./guides/nested-virtualization.md) — opt-in `/dev/kvm` inside a VM
 - [Run Firecracker inside machinen](./guides/firecracker.md) — boot an aarch64 L2 microVM with nested KVM
+- [Run a macOS guest](./guides/macos-guests.md) — boot a prepared bundle with Virtualization.framework and drive it over SSH
 
 Product docs:
 

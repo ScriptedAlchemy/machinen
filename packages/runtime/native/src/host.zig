@@ -831,11 +831,29 @@ fn identityFromPsParts(
     };
 }
 
+/// `ps -o lstart=` follows the host locale: "Wed Nov  4 ..." on en_US, and
+/// "Wed  4 Nov ..." on day-first locales. Try both before reporting unknown.
+const DARWIN_LSTART_FORMATS = [_][]const u8{ "%a %b %e %T %Y", "%a %e %b %T %Y" };
+
 fn parseDarwinLstartMs(allocator: std.mem.Allocator, io: std.Io, lstart: []const u8) Error!?i64 {
     assert(lstart.len > 0);
 
+    for (DARWIN_LSTART_FORMATS) |format| {
+        if (try parseDarwinLstartWithFormat(allocator, io, lstart, format)) |ms| return ms;
+    }
+    return null;
+}
+
+fn parseDarwinLstartWithFormat(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    lstart: []const u8,
+    format: []const u8,
+) Error!?i64 {
+    assert(format.len > 0);
+
     const result = std.process.run(allocator, io, .{
-        .argv = &.{ "/bin/date", "-j", "-f", "%a %e %b %T %Y", lstart, "+%s" },
+        .argv = &.{ "/bin/date", "-j", "-f", format, lstart, "+%s" },
         .stdout_limit = .limited(16 * 1024),
         .stderr_limit = .limited(16 * 1024),
     }) catch return null;
@@ -1320,6 +1338,30 @@ test "parsePsLstartLine reads lstart and command basename" {
     defer identity.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("machinen-vm", identity.exe_base);
     try std.testing.expectEqual(@as(?i64, 1_700_000_058_000), identity.started_at_ms);
+}
+
+test "parseDarwinLstartMs reads month-first and day-first lstart" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const month_first = try parseDarwinLstartMs(
+        std.testing.allocator,
+        std.testing.io,
+        "Wed Nov  4 15:58:58 2026",
+    );
+    const day_first = try parseDarwinLstartMs(
+        std.testing.allocator,
+        std.testing.io,
+        "Wed  4 Nov 15:58:58 2026",
+    );
+    try std.testing.expect(month_first != null);
+    try std.testing.expectEqual(month_first, day_first);
+}
+
+test "readProcessIdentity reports a real start time for this process" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const pid: u32 = @intCast(std.c.getpid());
+    const identity = (try readProcessIdentity(std.testing.allocator, std.testing.io, pid)).?;
+    defer identity.deinit(std.testing.allocator);
+    try std.testing.expect(identity.started_at_ms != null);
 }
 
 test "validatePid returns alive for this process without expectations" {

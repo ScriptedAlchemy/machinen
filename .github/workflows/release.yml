@@ -129,6 +129,20 @@ jobs:
           path: packages/session/zig-out/bin/machinen-session
           if-no-files-found: error
           retention-days: 7
+      - name: Build, sign, and check the macOS guest runner
+        # build.sh verifies the signature and the virtualization entitlement.
+        # Signing has to happen here, since the release job runs on Linux.
+        # Hosted runners cannot run VMs, so test.sh skips guest validation
+        # there but still covers status reporting, locking, and identity.
+        run: |
+          bash packages/native-arm64-darwin/vz-runner/build.sh
+          bash packages/native-arm64-darwin/vz-runner/test.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vz-runner-arm64-darwin
+          path: packages/native-arm64-darwin/vz-runner/bin/machinen-vz-runner
+          if-no-files-found: error
+          retention-days: 7
 
   build-vmm-arm64-linux:
     needs: [gate]
@@ -245,6 +259,10 @@ jobs:
         with:
           name: session-arm64-darwin
           path: packages/native-arm64-darwin/vmm/bin/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vz-runner-arm64-darwin
+          path: packages/native-arm64-darwin/vz-runner/bin/
       - name: Build and stage Linux runtime helper host tools
         run: |
           set -euo pipefail
@@ -278,6 +296,7 @@ jobs:
               "$pkg/vmm/bin/machinen-pty" \
               "$pkg/vmm/bin/machinen-winsize"
           done
+          chmod +x packages/native-arm64-darwin/vz-runner/bin/machinen-vz-runner
 
       # gvproxy (containers/gvisor-tap-vsock) — bundled next to the VMM
       # so `@machinen/runtime` can auto-spawn it for virtio-net without

@@ -24,6 +24,19 @@ export function printHelp(): void {
       `                                                 (must be absolute).\n` +
       `    --nested                                     Expose arm64 EL2 / /dev/kvm to the guest\n` +
       `                                                 when the host supports it.\n` +
+      `    --guest-os <linux|macos>                     Guest operating system (default: linux).\n` +
+      `                                                 macos boots a prepared bundle, not a\n` +
+      `                                                 kernel + rootfs.\n` +
+      `    --macos-bundle <dir>                         Prepared macOS bundle directory containing\n` +
+      `                                                 config.json. Required with --guest-os macos,\n` +
+      `                                                 as is --detach. Boots from a clone of it.\n` +
+      `    --ssh-key <path>                             SSH identity file for the macOS guest.\n` +
+      `                                                 Key-based only; recorded by path, never by\n` +
+      `                                                 content.\n` +
+      `    --ssh-user <name>                            SSH user for the macOS guest.\n` +
+      `    --ssh-host <address>                         macOS guest address. Discovered from DHCP\n` +
+      `                                                 leases by default.\n` +
+      `    --provider <name>                            machinen-hvf | machinen-kvm | apple-vz.\n` +
       `    -p <hostPort>:<guestPort>                    Forward host:hostPort → guest:guestPort.\n` +
       `\n` +
       `  machinen restore <snap-dir> [--image <tar.gz>] [--name <name>] [-p ...]\n` +

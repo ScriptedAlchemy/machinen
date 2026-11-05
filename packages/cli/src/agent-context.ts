@@ -63,7 +63,7 @@ const TARGET_POSITIONAL: PositionalSpec = {
 export const COMMANDS: CommandSpec[] = [
   {
     name: "boot",
-    summary: "Boot a microVM and run a command in it.",
+    summary: "Boot a microVM or a macOS guest and run a command in it.",
     jsonOutput: true,
     flags: [
       {
@@ -112,6 +112,42 @@ export const COMMANDS: CommandSpec[] = [
         name: "--nested",
         type: "boolean",
         description: "Expose arm64 EL2 / /dev/kvm to the guest when the host supports it.",
+      },
+      {
+        name: "--guest-os",
+        type: "enum",
+        values: ["linux", "macos"],
+        description:
+          "Guest operating system. Defaults to linux. macos requires --detach, a prepared bundle, and SSH.",
+      },
+      {
+        name: "--provider",
+        type: "enum",
+        values: ["machinen-hvf", "machinen-kvm", "apple-vz"],
+        description: "Explicit provider override. Defaults from --guest-os and the host.",
+      },
+      {
+        name: "--macos-bundle",
+        type: "string",
+        description:
+          "Prepared macOS VM bundle directory. Required when --guest-os is macos. Format: a directory containing config.json. Each boot runs from an APFS clone, so the bundle is never written to.",
+      },
+      {
+        name: "--ssh-key",
+        type: "string",
+        description:
+          "SSH identity file for a macOS guest. Recorded by path so later commands can reconnect, never by content. Password auth is unsupported.",
+      },
+      {
+        name: "--ssh-user",
+        type: "string",
+        description: "SSH user for a macOS guest. Defaults to the current host user.",
+      },
+      {
+        name: "--ssh-host",
+        type: "string",
+        description:
+          "Address of a macOS guest. Defaults to discovery from the host's DHCP leases by the guest's MAC address.",
       },
       {
         name: "--json",

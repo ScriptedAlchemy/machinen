@@ -22,6 +22,13 @@ export async function cmdBoot(args: string[]): Promise<number> {
   const parsed = parseBootCommandArgs(args);
   validateBootCommandArgs(parsed);
 
+  // A macOS guest boots a prepared bundle, so the Debian kernel, DTB, and
+  // rootfs cache must not be touched. Resolving them first would demand a
+  // Linux base install for a guest that has no use for one.
+  if (parsed.guestOS === "macos") {
+    return bootMacosCommand(parsed);
+  }
+
   const imageOverride = parsed.positional[0];
   const paths = await resolveCliBaseAssets();
   const imagePath = imageOverride ? resolve(imageOverride) : paths.defaultImagePath;
@@ -34,6 +41,89 @@ export async function cmdBoot(args: string[]): Promise<number> {
     return 0;
   }
   return runBootAttachedSession(vm, quiet);
+}
+
+const MACOS_BOOT_REQUIREMENTS: ReadonlyArray<{
+  missing: (parsed: ParsedBootArgs) => boolean;
+  message: string;
+}> = [
+  {
+    missing: (p) => !p.detached,
+    message:
+      "boot --guest-os macos needs --detach. A macOS guest has no console to attach to, " +
+      "and its runner outlives this command. Drive it with `machinen exec`.",
+  },
+  {
+    missing: (p) => (p.macosBundle ?? p.positional[0]) === undefined,
+    message:
+      "boot --guest-os macos needs a prepared bundle. " +
+      "Pass --macos-bundle <dir> or a positional bundle path.",
+  },
+  {
+    missing: (p) => p.sshIdentityFile === undefined,
+    message:
+      "boot --guest-os macos needs an SSH identity file for the guest. " +
+      "Pass --ssh-key <path>. Password authentication is not supported.",
+  },
+];
+
+async function bootMacosCommand(parsed: ParsedBootArgs): Promise<number> {
+  rejectLinuxOnlyFlags(parsed);
+  requireMacosOptions(parsed);
+  const quiet = createBootQuietState(parsed, parsed.macosBundle);
+  try {
+    return await runMacosBoot(parsed);
+  } catch (err) {
+    handleBootFailure(err, quiet);
+  }
+}
+
+function requireMacosOptions(parsed: ParsedBootArgs): void {
+  const unmet = MACOS_BOOT_REQUIREMENTS.find((entry) => entry.missing(parsed));
+  if (unmet) {
+    die(unmet.message);
+  }
+}
+
+async function runMacosBoot(parsed: ParsedBootArgs): Promise<number> {
+  const vm = await boot(macosBootOptions(parsed));
+  if (parsed.json) {
+    emitDetachedBootJson(vm, parsed);
+    return 0;
+  }
+  const target = parsed.name ?? vm.pid;
+  process.stderr.write(
+    `machinen: macOS guest ${target} is running.\n` +
+      `Run a command: machinen exec ${target} -- <cmd>\n` +
+      `Stop: machinen stop ${target}\n`,
+  );
+  return 0;
+}
+
+function macosBootOptions(parsed: ParsedBootArgs): Parameters<typeof boot>[0] {
+  return {
+    guestOS: "macos",
+    provider: parsed.provider as "apple-vz" | undefined,
+    name: parsed.name,
+    detached: true,
+    macos: {
+      source: { kind: "prepared-bundle", path: macosBundlePath(parsed) },
+      ssh: {
+        user: macosSshUser(parsed),
+        identityFile: resolve(parsed.sshIdentityFile!),
+        host: parsed.sshHost,
+      },
+      memoryMib: parsed.memory,
+    },
+  };
+}
+
+function macosBundlePath(parsed: ParsedBootArgs): string {
+  return (parsed.macosBundle ?? parsed.positional[0])!;
+}
+
+function macosSshUser(parsed: ParsedBootArgs): string {
+  return parsed.sshUser ?? process.env.USER ?? "admin";
 }
 
 function parseBootCommandArgs(args: string[]): ParsedBootArgs {
@@ -51,6 +141,42 @@ function validateBootCommandArgs(parsed: ParsedBootArgs): void {
   if (parsed.positional.length > 1) {
     die(bootUsage());
   }
+}
+
+/**
+ * Refuse Linux-only flags for a macOS guest before anything spawns.
+ * Silently dropping them would produce a guest that does not match the
+ * command line.
+ */
+const LINUX_ONLY_BOOT_FLAGS: ReadonlyArray<{
+  flag: string;
+  present: (parsed: ParsedBootArgs) => boolean;
+}> = [
+  { flag: "--snapshot", present: (p) => p.snapshot !== undefined },
+  { flag: "--mount", present: (p) => p.mount !== undefined },
+  { flag: "--mount-live", present: (p) => p.liveMounts !== undefined },
+  { flag: "-p", present: (p) => p.portForward !== undefined },
+  { flag: "--nested", present: (p) => p.nested },
+  {
+    flag: "--cpu-quota/--cpu-weight/--vcpus",
+    present: (p) => p.cpu !== undefined && Object.keys(p.cpu).length > 0,
+  },
+  { flag: "--env", present: (p) => p.env !== undefined },
+  { flag: "--cwd", present: (p) => p.guestCwd !== undefined },
+  { flag: "-- <cmd>", present: (p) => p.double_dash_args.length > 0 },
+];
+
+function rejectLinuxOnlyFlags(parsed: ParsedBootArgs): void {
+  const rejected = LINUX_ONLY_BOOT_FLAGS.filter((entry) => entry.present(parsed)).map(
+    (entry) => entry.flag,
+  );
+  if (rejected.length === 0) {
+    return;
+  }
+  die(
+    `boot --guest-os macos does not support ${rejected.join(", ")}. ` +
+      "A macOS guest boots a prepared bundle and is driven with `machinen exec`.",
+  );
 }
 
 function bootUsage(): string {

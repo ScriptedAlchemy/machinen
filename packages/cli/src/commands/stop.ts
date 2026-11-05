@@ -41,7 +41,10 @@ async function stopLiveEntry(entry: RegistryEntry, opts: StopOptions): Promise<n
 
 async function stopVmProcess(entry: RegistryEntry, opts: StopOptions): Promise<boolean> {
   if (opts.force) {
-    return signalStopProcess(entry.pid, "SIGKILL", opts, "STOP_KILL_FAILED");
+    const signaled = signalStopProcess(entry.pid, "SIGKILL", opts, "STOP_KILL_FAILED");
+    // The final gc only reaps a dead pid, so give the kill time to land.
+    await waitForExit(entry.pid, 2_000);
+    return signaled;
   }
   try {
     const vm = await attach({ pid: entry.pid });

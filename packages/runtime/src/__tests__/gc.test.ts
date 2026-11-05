@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { runGc, validatePid } from "../index.ts";
+import { readProcessIdentity } from "../pid-validate.ts";
 import { listAll, type RegistryEntry } from "../registry.ts";
 
 let helperTmp: string | undefined;
@@ -103,7 +104,7 @@ describe("runGc", () => {
     makeEntry(root, {
       pid: process.pid,
       socketPath: join(root, "sock"),
-      startedAt: Date.now(),
+      startedAt: readProcessIdentity(process.pid)!.startedAtMs!,
     });
     expect(runGc()).toEqual([]);
     expect(listAll().length).toBe(1);
